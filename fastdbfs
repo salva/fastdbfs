@@ -12,6 +12,11 @@ import time
 import shlex
 import pathlib
 import base64
+import subprocess
+import tempfile
+import json
+import zlib
+import progressbar
 
 class FileInfo():
 
@@ -42,7 +47,12 @@ class FileInfo():
 
     def type(self):
         return "dir" if self._is_dir else "file"
-        
+
+class APIError(Exception):
+    def __init__(self, error_code, message):
+        super().__init__(message)
+        self.error_code = error_code
+    
 class Disconnected():
     def __init__(self):
         pass
@@ -56,7 +66,8 @@ class Disconnected():
 class DBFS():
 
     def __init__(self, id, host, cluster_id, token,
-                 workers=8, chunk_size=1048576, retries=10):
+                 workers=8, chunk_size=1048576, max_retries=10,
+                 error_delay=10, error_delay_increment=10):
         self.id = id
         self.host = host
         self.cluster_id = cluster_id
@@ -64,7 +75,9 @@ class DBFS():
         self.path = "/"
         self.workers = workers
         self.chunk_size = chunk_size
-        self.retries = retries
+        self.max_retries = max_retries
+        self.error_delay = error_delay
+        self.error_delay_increment = error_delay_increment
         # print(f"host: {self.host}, cluster: {self.cluster_id}, token: {self.token}")
 
     def check(self):
@@ -81,165 +94,417 @@ class DBFS():
         self._assert_dir(path)
         self.path = path
 
-    def _simple_get(self, end_point, **params):
+    async def _unpack_response(self, response):
+        status = response.status
+        ct = response.headers['content-type']
+        if ct != "application/json":
+            raise Exception(f"Unexpected response received from API, Content-type: {ct}, HTTP status: {status}")
 
+        try:
+            data = await response.json()
+        except Exception as ex:
+            raise Exception("Unable to retrieve API response") from ex
+
+        if status == 200:        
+            return data
+
+        try:
+            error_code = data["error_code"]
+            message = data["message"]
+        except:
+            raise Exception("Unexpected response received from API, HTTP status {status}")
+
+        raise APIError(error_code, message)
+                
+
+    def _simple_rpc(self, cb, max_retries=None):
         async def worker():
             async with aiohttp.ClientSession() as session:
-                url = urllib.parse.urljoin(self.host, end_point)
-                headers = { "Authorization": "Bearer " + self.token }
-                #print(f"url: {url}, headers: {headers}")
-                async with session.get(url,
-                                       params=params,
-                                       headers=headers) as response:
-                    #print("Status:", response.status)
-                    #print("Content-type:", response.headers['content-type'])
-                    #print("Content:", await response.text())
-                    return await response.json()
+                retries = 0
+                while True:
+                    try:
+                        return await cb(session)
+                    except OSError as ex:
+                        if max_retries is None:
+                            max_retries = self.max_retries 
+                        if retries > max_retries:
+                            raise ex
+                    await asyncio.sleep(self.error_delay + self.error_delay_increment * retries)
+                    retries += 1
 
-                
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(worker())
+                
+    def _simple_get(self, end_point, **params):
+        async def cb(session):
+            url = urllib.parse.urljoin(self.host, end_point)
+            headers = { "Authorization": "Bearer " + self.token }
+            async with session.get(url,
+                                   params=params,
+                                   headers=headers) as response:
+                return await self._unpack_response(response)
 
-    def _get_status(self, path):
+        return self._simple_rpc(cb)
+
+    def _simple_post(self, end_point, **data):
+        async def cb(session):
+            url = urllib.parse.urljoin(self.host, end_point)
+            headers = { "Authorization": "Bearer " + self.token,
+                        "Content-Type": "application/json",
+                        "Content-Encoding": "deflate"}
+            load = json.dumps(data)
+            async with session.post(url,
+                                    headers=headers,
+                                    data=load) as response:
+                return await self._unpack_response(response)
+
+        return self._simple_rpc(cb)
+
+    def get_status(self, path):
         r = self._simple_get("api/2.0/dbfs/get-status", path=self._resolve(path))
         return FileInfo.from_json(r)
 
     def ls(self, path):
         path = self._resolve(path)
-        fi = self._get_status(path)
+        fi = self.get_status(path)
         if fi.is_dir():
             r = self._simple_get("api/2.0/dbfs/list", path=path)
             return [FileInfo.from_json(e) for e in r["files"]]
         else:
             return [fi]
-    
-    def _assert_dir(self, path):
-        if not self._get_status(path).is_dir():
-            raise Exception("Not a directory")
 
-    def get(self, src, target):
+    def rm(self, path):
+        self._simple_post("api/2.0/dbfs/delete",
+                          path=self._resolve(path),
+                          recursive=False)
+        
+    def _assert_dir(self, path):
+        if not self.get_status(path).is_dir():
+            raise Exception("Not a directory")
+        
+    def put_from_file(self, infile, target, size=None):
+        target = self._resolve(target)
+
+        out = self._simple_post("api/2.0/dbfs/create",
+                                path=target,
+                                overwrite=False)
+        handle = int(out["handle"])
+
+        bytes = 0;
+        with progressbar.ProgressBar(max_value = progressbar.UnknownLength if size is None else size) as bar:
+        
+            while True:
+                chunk = infile.read(self.chunk_size)
+                if len(chunk) == 0:
+                    break
+                bytes += len(chunk)
+                self._simple_post("api/2.0/dbfs/add-block",
+                                  data=base64.standard_b64encode(chunk).decode('ascii'),
+                                  handle=handle)
+
+                bar.update(bytes)
+
+        self._simple_post("api/2.0/dbfs/close", handle=handle)
+
+        fi = self.get_status(target)
+        if fi.size() != bytes:
+            raise Exception("corrupted copy detected")
+        return fi
+
+    def _swarm_do(task, loops=False):
+
+        ok = True
+        
+        async def slave(in_queue, out_queue):
+            nonlocal ok
+            async with aiohttp.ClientSession() as session:
+                while True:
+                    task = await in_queue.get()
+                    if task is None:
+                        return True
+
+                    if ok:
+                        try:
+                            await task[0](session, out_queue, **task[1])
+                        except Exception as ex:
+                            print(f"Exception caught in worker: {ex}")
+                            ok = False
+
+        slave_queue = asyncio.Queue(maxsize = self.workers * 2)
+        loop_queue = asyncio.Queue() if loops else None
+        result = None
+
+        async def control():
+            nonlocal result
+            result = await task(slave_queue, loop_queue)
+
+            for _ in range(self.workers):
+                await slave_queue.put(None)
+            if loops:
+                for _ in range(self.workers):
+                    await loop_queue.put(None)
+
+        
+        slaves = [slave(slave_queue, loop_queue) for _ in range(self.workers)]
+        if loops:
+            slaves += [slave(loop_queue, slave_queue) for _ in range(self.workers)]
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(asyncio.gather(control, *slaves))
+        return result
+
+    async def _queue_task(self, queue, task, **kwargs):
+        return await queue.put((task, kwargs))
+    
+    async def _queue_and_wait(self, queue, task, **kwargs):
+        event = asyncio.Event()
+        
+        r = None
+        ex = None
+        
+        async def cb(*args, **kwargs):
+            nonlocal r, ex
+            try:
+                r = await task(*args, **kwargs)
+            except Exception as ex1:
+                ex = ex1
+            event.set()
+
+        await self._queue_task(cb, **kwargs)
+        await event.wait()
+        if ex:
+            raise ex
+        return r
+
+    def _task_end_point_get(self, end_point):
+        async def task(session, _, **params):
+            url = urllib.parse.urljoin(self.host, end_point)
+            headers = { "Authorization": "Bearer " + self.token }
+            # TODO: retries
+            async with session.get(url,
+                                   headers=headers,
+                                   params=params) as response:
+                return await self._unpack_response(response)
+        return task
+
+    async def _async_get_stat(self, queue, path):
+        task = self._task_end_point_get("api/2.0/dbfs/get-status")
+        json = await self._queue_and_wait(task, path=path)
+        return FileInfo.from_json(json)
+
+    def _get_to_file_task(self, queue, src, out):
+
+        async def task():
+
+
+            ok = True
+
+            task_read = self._task_end_point_get("api/2.0/dbfs/read")
+            async def download_chunk(session, _, offset, length):
+                try:
+                    await task_read(offset=offset, length=length)
+                except:
+                    ok = False
+
+            fi = await self._async_get_stat(queue, src)
+            size = fi.size()
+            offset = 0
+                    
+                    
+            while ok:
+                next_offset = min(offset + self.chunk_size, size)
+                length = next_offset - offset
+                if length <= 0:
+                    break
+
+                data = { 
+                async def download(session):
+                    pass
+                
+                await queue.put({ "offset": offset, "length": length })
+                offset = next_offset
+
+            for _ in range(self.workers):
+                await queue.put(None)
+
+        
+        async def master(queue, session):
+            offset = 0;
+            fi = _queue_and_wait(queue, 
+            length = fi.size()
+
+            for 
+        
+            while ok:
+                next_offset = min(offset + self.chunk_size, size)
+                length = next_offset - offset
+                if length <= 0:
+                    break
+                #print(f"Queueing offset {offset}, length {length}...");
+                await queue.put({ "offset": offset, "length": length })
+                offset = next_offset
+
+            async def master0(slave_queue, session):
+                
+            for _ in range(self.workers):
+                await queue.put(None)
+
+    def get_to_file(self, src, out):
         src = self._resolve(src)
-        fi = self._get_status(src)
+        fi = self.get_status(src)
         url = urllib.parse.urljoin(self.host, "api/2.0/dbfs/read")
         headers = { "Authorization": "Bearer " + self.token }
 
         queue = asyncio.Queue(maxsize = self.workers * 2)
         ok = True
-
-        with open(target, "wb") as out:
         
-            async def slave():
-                nonlocal ok
-                async with aiohttp.ClientSession() as session:
+        async def slave(update_cb = None):
+            nonlocal ok
+            async with aiohttp.ClientSession() as session:
+                while True:
+                    task = await queue.get()
+                    if task is None:
+                        return
+                    offset = task["offset"]
+                    length = task["length"]
+                    retries = 0
                     while True:
-                        task = await queue.get()
-                        if task is None:
-                            return
-                        offset = task["offset"]
-                        length = task["length"]
-                        retries = 0
-                        while True:
-                            try:
-                                async with session.get(url,
-                                                       params={"path": src, "offset": offset, "length": length},
-                                                       headers=headers) as response:
-                                    r = await response.json()
-                                bytes_read = r["bytes_read"]
-                                if bytes_read == 0:
-                                    raise Exception("empty data response")
+                        try:
+                            async with session.get(url,
+                                                   params={"path": src, "offset": offset, "length": length},
+                                                   headers=headers) as response:
+                                r = await self._unpack_response(response)
+                            bytes_read = r["bytes_read"]
+                            if bytes_read == 0:
+                                raise Exception("empty data response")
 
 
-                                #print(f"{bytes_read} bytes copied")
-                                out.seek(offset)
-                                out.write(base64.standard_b64decode(r["data"]))
+                            #print(f"{bytes_read} bytes copied")
+                            out.seek(offset)
+                            out.write(base64.standard_b64decode(r["data"]))
 
-                                if bytes_read < length:
-                                    # we ask for the remaining data without incrementing the retries counter
-                                    length -= bytes_read
-                                    offset += bytes_read
-                                else:
-                                    # go for the next task
-                                    break
-                            except Exception as ex:
-                                print(f"Something went wrong when transferring {length} bytes at offset {offset} ({ex})")
-                                retries += 1
+                            if update_cb:
+                                update_cb(bytes_read)
+                            
+                            if bytes_read < length:
+                                # we ask for the remaining data without incrementing the retries counter
+                                length -= bytes_read
+                                offset += bytes_read
+                            else:
+                                # go for the next task
+                                break
+                        except Exception as ex:
+                            print(f"Something went wrong when transferring {length} bytes at offset {offset} ({ex})")
 
-                                if retries > self.retries: # too many retries
-                                    ok = False
-                                    print("Aborting!")
-                                    break
-                                print(f"Delaying before retrying [{retries}]...")
-                                await asyncio.sleep(1)
+                            if retries > self.max_retries: # too many retries
+                                ok = False
+                                print("Aborting!")
+                                break
+                            print(f"Delaying before retrying [{retries}]...")
+                            await asyncio.sleep(self.error_delay + self.error_delay_increment * retries)
+                            retries += 1
 
-            async def master():
-                nonlocal ok
-                offset = 0
-                size = fi.size()
-                while ok:
-                    next_offset = min(offset + self.chunk_size, size)
-                    length = next_offset - offset
-                    if length <= 0:
-                        break
-                    #print(f"Queueing offset {offset}, length {length}...");
-                    await queue.put({ "offset": offset, "length": length })
-                    offset = next_offset
 
-                for _ in range(self.workers):
-                    await queue.put(None)
+        async def master():
+            nonlocal ok
+            offset = 0
+            size = fi.size()
+            while ok:
+                next_offset = min(offset + self.chunk_size, size)
+                length = next_offset - offset
+                if length <= 0:
+                    break
+                #print(f"Queueing offset {offset}, length {length}...");
+                await queue.put({ "offset": offset, "length": length })
+                offset = next_offset
 
-            async def all():
-                slaves = [slave() for _ in range(self.workers)]
-                await asyncio.gather(master(), *slaves)
+            for _ in range(self.workers):
+                await queue.put(None)
 
+        async def all(update_cb=None):
+            slaves = [slave(update_cb) for _ in range(self.workers)]
+            await asyncio.gather(master(), *slaves)
+
+        with progressbar.ProgressBar(max_value = fi.size()) as bar:
+            total_bytes = 0
+            def update_cb(bytes_read):
+                nonlocal total_bytes
+                total_bytes += bytes_read
+                bar.update(total_bytes)
+            
             loop = asyncio.get_event_loop()
-            loop.run_until_complete(all())
+            loop.run_until_complete(all(update_cb))
 
         if ok:
             return fi
         raise Exception("file copy failed")
 
 
-    
 class CLI(cmd.Cmd):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        cfg_fn = os.path.join(os.path.expanduser("~"), ".databrickscfg")
-        self.cfg = configparser.ConfigParser()
-        self.cfg.read(cfg_fn)
-        print(self.cfg)
-        self.dbfs = Disconnected()
-        self._set_prompt()
-        self.debug = True
 
+        self._init_cfg()
+        self._dbfs = Disconnected()
+        self._set_prompt()
+        self._debug = True
+
+    def cfg(self, section, key):
+        try:
+            return self._cfg[section][key]
+        except:
+            raise Exception(f"Configuration entry {key} missing in section {section}")
+
+    def cfg_int(self, section, key):
+        v = self.cfg(section, key)
+        try:
+            return int(v)
+        except:
+            raise Exception(f"Configuration entry {key} is not an integer")
+        
+    def _init_cfg(self):
+        self._cfg = configparser.ConfigParser()
+        self._cfg["fastdbfs"] = {
+            "workers": 8,
+            "chunk_size": 1048576,
+            "max_retries": 10,
+            "pager": "less",
+            "error_delay": 10,
+            "error_delay_increment": 10
+        }
+
+        home = os.path.expanduser("~")
+        fns = [os.path.join(home, fn) for fn in (".databrickscfg", ".fastdbfs", ".config/fastdbfs")]
+        self._cfg.read(fns)    
+        
     def _tell_error(self, msg):
         _, ex, trace = sys.exc_info()
         print(f"{msg}: {ex}")
-        if self.debug:
+        if self._debug:
             print("Stack trace:")
-            for t in traceback.extract_tb(trace):
-                print("  File: %s, Line: %d, Func name: %s, Message: %s" % (t[0], t[1], t[2], t[3]))
+            traceback.print_tb(trace)
         
     def do_open(self, arg):
         try:
-            args = self._parse(arg)
-            if args:
-                id, = args
-            else:
-                id = "DEFAULT"
-
+            id, = self._parse(arg, "DEFAULT")
             dbfs = DBFS(id,
-                        host = self.cfg.get(id, "host"),
-                        cluster_id = self.cfg.get(id, "cluster_id"),
-                        token = self.cfg.get(id, "token"))
+                        host = self.cfg(id, "host"),
+                        cluster_id = self.cfg(id, "cluster_id"),
+                        token = self.cfg(id, "token"),
+                        chunk_size = self.cfg_int("fastdbfs", "chunk_size"),
+                        workers = self.cfg_int("fastdbfs", "workers"),
+                        max_retries = self.cfg_int("fastdbfs", "max_retries"))
+            
             dbfs.check()
-            self.dbfs = dbfs
+            self._dbfs = dbfs
         except:
             self._tell_error(f"Unable to open {arg}")
 
-    def do_cd(self, path):
+    def do_cd(self, arg):
+        path, = self._parse(arg, "/")
         try:
-            self.dbfs.cd(path)
+            self._dbfs.cd(path)
         except:
             self._tell_error(f"{path}: unable to change dir")
 
@@ -250,24 +515,20 @@ class CLI(cmd.Cmd):
             return "%.1fM" % (size / 1048576)
         if (size > 1024):
             return "%.1fK" % (size / 1024)
-        return str(size)
+        return str(int(size))
 
     def _format_time(self, mtime):
         return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mtime/1000))
 
     def do_ls(self, arg):
         try:
-            args = self._parse(arg)
-            if args:
-                path, = args
-            else:
-                path = "."
+            path, = self._parse(arg, ".")
             # cols are type, size, mtime and path
             type_len = 3
             size_len = 1
             mtime_len = 1
             table = []
-            for e in self.dbfs.ls(path):
+            for e in self._dbfs.ls(path):
                 row = (e.type(),
                        self._format_size(e.size()),
                        self._format_time(e.mtime()),
@@ -288,58 +549,157 @@ class CLI(cmd.Cmd):
 
     def do_lcd(self, arg):
         try:
-            path, = self._parse(arg)
+            path, = self._parse(arg, os.path.expanduser("~"))
             os.chdir(path)
         except:
             self._tell_error(f"{arg}: unable to change dir")
 
     def do_lpwd(self, arg):
+        self._parse(arg)
         try:
             print(os.getcwd())
         except:
             self._tell_error("getcwd failed")
 
-    def _create_parent_dir(self, path):
-        parent, _ = os.path.split(path)
-        pathlib.Path(parent).mkdir(parents=True, exist_ok=True)
+    def _mkdir(self, path):
+        pathlib.Path(path).mkdir(parents=True, exist_ok=True)
+
+    def do_put(self, arg):
+        try:
+            src, target = self._parse(arg, ".", min=1)
+            try:
+                # We check whether the target exists and if it is a
+                # directory.  If it is a directory we compose the name
+                # using the src basename and check the target again.
+                for first in (True, False):
+                    fi = self._dbfs.get_status(target)
+                    if first and fi.is_dir():
+                        target = os.path.join(target, os.path.basename(src))
+                    else:
+                        break
+            except Exception as ex:
+                print(f"file not found at {target}: {ex}")
+                # No file there, ok!
+                pass
+            else:
+                raise Exception("File already exists")
+
+            print(f"copying to {target}")
+
+            size = os.stat(src).st_size
             
+            with open(src, "rb") as infile:
+                start = time.time()
+                self._dbfs.put_from_file(infile, target, size=size)
+                delta = max(1, time.time() - start)
+
+        except:
+            self._tell_error(f"{arg}: put failed")
+
     def do_get(self, arg):
         try:
-            args = self._parse(arg)
-            if len(args) < 1 or len(args) > 1:
-                raise Exception("wrong number of arguments")
-
-            src = args[0]
-            target = args[1] if len(args) > 1 else "."
+            src, target = self._parse(arg, ".", min=1)
 
             if os.path.isdir(target):
                 target = os.path.join(target, os.path.basename(src))
             if os.path.exists(target):
                 raise Exception("file already exists")
 
-            self._create_parent_dir(target)
+            parent_dir, _ = os.path.split(target)
+            self._mkdir(parent_dir)
 
-            start = time.time()
-            fi = self.dbfs.get(src, target)
-            delta = max(1, time.time() - start)
-            size = fi.size()
-            kbps = size / 1024 / delta
-            print(f"{size} bytes copied in {int(delta)} seconds ({self._format_size(kbps)}bps)")
+            (f, tmp_fn) = tempfile.mkstemp(prefix=".transferring-", dir=parent_dir)
+            out = os.fdopen(f, "wb")
+            try:
+                start = time.time()
+                fi = self._dbfs.get_to_file(src, out)
+                delta = max(1, time.time() - start)
+                out.close()
+                
+                os.rename(tmp_fn, target)
+                
+                size = fi.size()
+                bps = size / delta
+                print(f"{size} bytes copied in {int(delta)} seconds ({self._format_size(bps)}bps)")
+
+            finally:
+                try: out.close()
+                except: pass
+                try: os.remove(tmp_fn)
+                except: pass
                 
         except:
             self._tell_error(f"{arg}: unable to retrieve remote file")
+
+    def _get_and_call(self, src, cb):
+        try:
+            try:
+                bn = os.path.basename(src)
+                suffix = bn[bn.rindex("."):]
+            except:
+                suffix = ""
+            (f, tmp_fn) = tempfile.mkstemp(prefix=".tmp-", suffix=suffix)
+            out = os.fdopen(f, "wb")
+            try:
+                fi = self._dbfs.get_to_file(src, out)
+                out.close()
+                subprocess.run([self.cfg("fastdbfs", "pager"), '--', tmp_fn])
+            finally:
+                try: out.close()
+                except: pass
+                try: os.remove(tmp_fn)
+                except: pass
+        except:
+            self._tell_error(f"{arg}: unable to retrieve remote file")
+
+    def do_rm(self, arg):
+        try:
+            path, = self._parse(arg, min=1)
+            self._dbfs.rm(path)
+            print("File removed");
+        except:
+            self._tell_error(f"{arg}: unable to remove remote file")
             
+    def do_more(self, arg):
+        src, = self._parse(arg, min=1)
+        pager = self.cfg("fastdbfs", "pager")
+        def cb(fn):
+            subprocess.run([pager, "--", fn])
+        self._get_and_call(arg, cb)
+
+    def do_less(self, arg):
+        self.do_more(arg)
+
+    def do_shell(self, arg):
+        os.system(arg)
+
+    def do_EOF(self, arg):
+        print("\nBye!")
+        return True
+
+    def do_exit(self, arg):
+        print("Bye!")
+        return True
+    
     def _set_prompt(self):
-        if self.dbfs:
-            self.prompt = self.dbfs.prompt()
+        if self._dbfs:
+            self.prompt = self._dbfs.prompt()
         else:
             self.prompt = "*disconnected* "
             
     def postcmd(self, stop, line):
         self._set_prompt()
+        return stop
 
-    def _parse(self, arg):
-        return shlex.split(arg)
+    def _parse(self, arg, *defaults, min=0, max=None):
+        args = shlex.split(arg)
+        max1 = max if max is not None else min + len(defaults)
+        if ((len(args) < min) or
+            (max1 >= 0 and len(args) > max1)):
+            raise Exception("wrong number of arguments")
+
+        args += defaults[len(args)-min:]
         
-        
+        return args
+
 CLI().cmdloop()
