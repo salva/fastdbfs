@@ -63,6 +63,7 @@ class Disconnected():
     def prompt(self):
         return "*disconnected* "
 
+
 class DBFS():
 
     def __init__(self, id, host, cluster_id, token,
@@ -78,6 +79,9 @@ class DBFS():
         self.max_retries = max_retries
         self.error_delay = error_delay
         self.error_delay_increment = error_delay_increment
+
+        self.semaphore = asyncio.Semaphore(workers)
+        
         # print(f"host: {self.host}, cluster: {self.cluster_id}, token: {self.token}")
 
     def check(self):
@@ -93,7 +97,7 @@ class DBFS():
         path = self._resolve(path)
         self._assert_dir(path)
         self.path = path
-
+        
     async def _unpack_response(self, response):
         status = response.status
         ct = response.headers['content-type']
@@ -102,6 +106,9 @@ class DBFS():
 
         try:
             data = await response.json()
+        except OSError as ex:
+            # connection errors and alike should be retried
+            raise ex
         except Exception as ex:
             raise Exception("Unable to retrieve API response") from ex
 
@@ -115,61 +122,79 @@ class DBFS():
             raise Exception("Unexpected response received from API, HTTP status {status}")
 
         raise APIError(error_code, message)
-                
 
-    def _simple_rpc(self, cb, max_retries=None):
-        async def worker():
-            async with aiohttp.ClientSession() as session:
-                retries = 0
-                while True:
-                    try:
-                        return await cb(session)
-                    except OSError as ex:
-                        if max_retries is None:
-                            max_retries = self.max_retries 
-                        if retries > max_retries:
-                            raise ex
-                    await asyncio.sleep(self.error_delay + self.error_delay_increment * retries)
-                    retries += 1
+    async def _async_control(self, cb):
+        retries = 0
+        while True:
+            async with self.semaphore:
+                try:
+                    return await cb()
+                except OSError as ex:
+                    if retries > self.max_retries:
+                        raise ex
+                except Exception as ex:
+                    print(f"Exception caught: {ex}")
+                    raise ex
+                # We keep the semaphore while we sleep in order to
+                # reduce the pressure on the remote side.
+                await asyncio.sleep(self.error_delay + self.error_delay_increment * retries)
+                retries += 1
 
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(worker())
-                
-    def _simple_get(self, end_point, **params):
-        async def cb(session):
+    async def _async_get(self, session, end_point, **params):
+        async def cb():
             url = urllib.parse.urljoin(self.host, end_point)
             headers = { "Authorization": "Bearer " + self.token }
+            #print(f"session: {session}\nurl: {url}\nparams: {params}\nheaders: {headers}")
             async with session.get(url,
                                    params=params,
                                    headers=headers) as response:
                 return await self._unpack_response(response)
+        return await self._async_control(cb)
 
-        return self._simple_rpc(cb)
 
-    def _simple_post(self, end_point, **data):
-        async def cb(session):
+    async def _async_post(self, session, end_point, **data):
+        async def cb():
             url = urllib.parse.urljoin(self.host, end_point)
             headers = { "Authorization": "Bearer " + self.token,
-                        "Content-Type": "application/json",
-                        "Content-Encoding": "deflate"}
+                        "Content-Type": "application/json" }
             load = json.dumps(data)
             async with session.post(url,
                                     headers=headers,
                                     data=load) as response:
                 return await self._unpack_response(response)
 
-        return self._simple_rpc(cb)
+        return await self._async_control(cb)
 
-    def get_status(self, path):
-        r = self._simple_get("api/2.0/dbfs/get-status", path=self._resolve(path))
+    async def _async_call_with_session(self, cb, *params, **kwparams):
+        async with aiohttp.ClientSession() as session:
+            return await cb(session, *params, **kwparams)
+    
+    async def _async_get_status(self, session, path):
+        r = await self._async_get(session, "api/2.0/dbfs/get-status", path=self._resolve(path))
         return FileInfo.from_json(r)
+
+    def _run_with_session(self, task, *args, **kwargs):
+        task_with_session = self._async_call_with_session(task, *args, **kwargs)
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(task_with_session)
+
+    def _simple_get(self, end_point, **params):
+        return self._run_with_session(self._async_get, end_point, **params)
+
+    def _simple_post(self, end_point, **params):
+        return self._run_with_session(self._async_post, end_point, **params)
+            
+    def get_status(self, path):
+        return self._run_with_session(self._async_get_status, path)
 
     def ls(self, path):
         path = self._resolve(path)
         fi = self.get_status(path)
         if fi.is_dir():
             r = self._simple_get("api/2.0/dbfs/list", path=path)
-            return [FileInfo.from_json(e) for e in r["files"]]
+            if "files" in r:
+                return [FileInfo.from_json(e) for e in r["files"]]
+            return []
         else:
             return [fi]
 
@@ -181,264 +206,198 @@ class DBFS():
     def _assert_dir(self, path):
         if not self.get_status(path).is_dir():
             raise Exception("Not a directory")
-        
-    def put_from_file(self, infile, target, size=None):
+
+    async def _async_create(self, session, path, overwrite=False):
+        path = self._resolve(path)
+        out = await self._async_post(session,
+                                     "api/2.0/dbfs/create",
+                                     path=path, overwrite=overwrite)
+        return int(out["handle"])
+
+    async def _async_add_block(self, session, handle, block):
+        return await self._async_post(session,
+                                      "api/2.0/dbfs/add-block",
+                                      data=base64.standard_b64encode(block).decode('ascii'),
+                                      handle=handle)        
+
+    async def _async_close(self, session, handle):
+        return await self._async_post(session,
+                                      "api/2.0/dbfs/close",
+                                      handle=handle)
+    
+    async def _async_put_from_file(self, session, infile, target, size=None, overwrite=False, update_cb=None):
         target = self._resolve(target)
 
-        out = self._simple_post("api/2.0/dbfs/create",
-                                path=target,
-                                overwrite=False)
-        handle = int(out["handle"])
-
-        bytes = 0;
-        with progressbar.ProgressBar(max_value = progressbar.UnknownLength if size is None else size) as bar:
-        
+        handle = await self._async_create(session, target, overwrite)
+        try:
+            bytes_copied = 0
             while True:
                 chunk = infile.read(self.chunk_size)
-                if len(chunk) == 0:
+                chunk_len = len(chunk)
+                if chunk_len == 0:
                     break
-                bytes += len(chunk)
-                self._simple_post("api/2.0/dbfs/add-block",
-                                  data=base64.standard_b64encode(chunk).decode('ascii'),
-                                  handle=handle)
 
-                bar.update(bytes)
+                await self._async_add_block(session, handle, chunk)
 
-        self._simple_post("api/2.0/dbfs/close", handle=handle)
+                bytes_copied += chunk_len
+                if update_cb:
+                    await update_cb(size, bytes_copied)
 
-        fi = self.get_status(target)
-        if fi.size() != bytes:
-            raise Exception("corrupted copy detected")
-        return fi
+            await self._async_close(session, handle)
 
-    def _swarm_do(task, loops=False):
-
-        ok = True
-        
-        async def slave(in_queue, out_queue):
-            nonlocal ok
-            async with aiohttp.ClientSession() as session:
-                while True:
-                    task = await in_queue.get()
-                    if task is None:
-                        return True
-
-                    if ok:
-                        try:
-                            await task[0](session, out_queue, **task[1])
-                        except Exception as ex:
-                            print(f"Exception caught in worker: {ex}")
-                            ok = False
-
-        slave_queue = asyncio.Queue(maxsize = self.workers * 2)
-        loop_queue = asyncio.Queue() if loops else None
-        result = None
-
-        async def control():
-            nonlocal result
-            result = await task(slave_queue, loop_queue)
-
-            for _ in range(self.workers):
-                await slave_queue.put(None)
-            if loops:
-                for _ in range(self.workers):
-                    await loop_queue.put(None)
-
-        
-        slaves = [slave(slave_queue, loop_queue) for _ in range(self.workers)]
-        if loops:
-            slaves += [slave(loop_queue, slave_queue) for _ in range(self.workers)]
-
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(asyncio.gather(control, *slaves))
-        return result
-
-    async def _queue_task(self, queue, task, **kwargs):
-        return await queue.put((task, kwargs))
-    
-    async def _queue_and_wait(self, queue, task, **kwargs):
-        event = asyncio.Event()
-        
-        r = None
-        ex = None
-        
-        async def cb(*args, **kwargs):
-            nonlocal r, ex
-            try:
-                r = await task(*args, **kwargs)
-            except Exception as ex1:
-                ex = ex1
-            event.set()
-
-        await self._queue_task(cb, **kwargs)
-        await event.wait()
-        if ex:
+            fi = await self._async_get_status(session, target)
+            if fi.size() != bytes_copied:
+                raise Exception(f"corrupted copy detected, copied: {bytes_copied}, remote: {fi.size()}, expected: {size}")
+            return fi
+        except Exception as ex:
+            try: await self._async_rm(target)
+            except: pass
             raise ex
-        return r
+    
+    def put_from_file(self, infile, target, size=None, overwrite=False):
 
-    def _task_end_point_get(self, end_point):
-        async def task(session, _, **params):
-            url = urllib.parse.urljoin(self.host, end_point)
-            headers = { "Authorization": "Bearer " + self.token }
-            # TODO: retries
-            async with session.get(url,
-                                   headers=headers,
-                                   params=params) as response:
-                return await self._unpack_response(response)
-        return task
-
-    async def _async_get_stat(self, queue, path):
-        task = self._task_end_point_get("api/2.0/dbfs/get-status")
-        json = await self._queue_and_wait(task, path=path)
-        return FileInfo.from_json(json)
-
-    def _get_to_file_task(self, queue, src, out):
-
-        async def task():
-
-
-            ok = True
-
-            task_read = self._task_end_point_get("api/2.0/dbfs/read")
-            async def download_chunk(session, _, offset, length):
-                try:
-                    await task_read(offset=offset, length=length)
-                except:
-                    ok = False
-
-            fi = await self._async_get_stat(queue, src)
-            size = fi.size()
-            offset = 0
-                    
-                    
-            while ok:
-                next_offset = min(offset + self.chunk_size, size)
-                length = next_offset - offset
-                if length <= 0:
-                    break
-
-                data = { 
-                async def download(session):
-                    pass
+        with progressbar.DataTransferBar() as bar:
+            if size is not None:
+                bar.max_value = size 
+        
+            async def update_cb(size, bytes_read):
+                bar.update(bytes_read)
                 
-                await queue.put({ "offset": offset, "length": length })
-                offset = next_offset
+            return self._run_with_session(self._async_put_from_file,
+                                          infile, target, size, overwrite,
+                                          update_cb)
 
-            for _ in range(self.workers):
-                await queue.put(None)
+    def _new_swarm(self, workers, queue_max_size):
 
-        
-        async def master(queue, session):
-            offset = 0;
-            fi = _queue_and_wait(queue, 
-            length = fi.size()
-
-            for 
-        
-            while ok:
-                next_offset = min(offset + self.chunk_size, size)
-                length = next_offset - offset
-                if length <= 0:
-                    break
-                #print(f"Queueing offset {offset}, length {length}...");
-                await queue.put({ "offset": offset, "length": length })
-                offset = next_offset
-
-            async def master0(slave_queue, session):
-                
-            for _ in range(self.workers):
-                await queue.put(None)
-
-    def get_to_file(self, src, out):
-        src = self._resolve(src)
-        fi = self.get_status(src)
-        url = urllib.parse.urljoin(self.host, "api/2.0/dbfs/read")
-        headers = { "Authorization": "Bearer " + self.token }
-
-        queue = asyncio.Queue(maxsize = self.workers * 2)
-        ok = True
-        
-        async def slave(update_cb = None):
-            nonlocal ok
+        queue = asyncio.Queue(maxsize = queue_max_size)
+    
+        async def worker(ix):
+            # print(f"worker {ix} started")
+            
             async with aiohttp.ClientSession() as session:
                 while True:
+                    # print(f"worker {ix}  waiting for tasks")
                     task = await queue.get()
                     if task is None:
                         return
-                    offset = task["offset"]
-                    length = task["length"]
-                    retries = 0
-                    while True:
-                        try:
-                            async with session.get(url,
-                                                   params={"path": src, "offset": offset, "length": length},
-                                                   headers=headers) as response:
-                                r = await self._unpack_response(response)
-                            bytes_read = r["bytes_read"]
-                            if bytes_read == 0:
-                                raise Exception("empty data response")
+                    (cb, response_queue, kwargs) = task
+                    try:
+                        value = await cb(session, **kwargs)
+                        res = (value, None)
+                    except Exception as ex:
+                        res = (None, ex)
+                    if response_queue:
+                        await response_queue.put(res)
 
+        async def end():
+            for _ in range(workers):
+                await queue.put(None)
+                        
+        swarm = asyncio.gather(*[worker(ix) for ix in range(workers)])
+        return (swarm, queue, end)
 
-                            #print(f"{bytes_read} bytes copied")
-                            out.seek(offset)
-                            out.write(base64.standard_b64decode(r["data"]))
+    async def _queue_task(self, queue, task, response_queue=None, **kwargs):
+        return await queue.put((task, response_queue, kwargs))
 
-                            if update_cb:
-                                update_cb(bytes_read)
-                            
-                            if bytes_read < length:
-                                # we ask for the remaining data without incrementing the retries counter
-                                length -= bytes_read
-                                offset += bytes_read
-                            else:
-                                # go for the next task
-                                break
-                        except Exception as ex:
-                            print(f"Something went wrong when transferring {length} bytes at offset {offset} ({ex})")
+    def _unwrap_response(self, res):
+        (value, ex) = res
+        if ex is not None:
+            raise ex
+        return value
 
-                            if retries > self.max_retries: # too many retries
-                                ok = False
-                                print("Aborting!")
-                                break
-                            print(f"Delaying before retrying [{retries}]...")
-                            await asyncio.sleep(self.error_delay + self.error_delay_increment * retries)
-                            retries += 1
+    async def _async_get_chunk(self, session, path, offset, length, out):
+        # print(f"processing chunk at {offset}")
+        remaining = length
+        while remaining > 0:
+            r = await self._async_get(session,
+                                      "api/2.0/dbfs/read",
+                                      path=path, offset=offset, length=length)
+        
+            bytes_read = r["bytes_read"]
+            if bytes_read == 0 or bytes_read > remaining:
+                raise Exception("Invalid data response")
 
+            chunk = base64.standard_b64decode(r["data"])
+            if len(chunk) != bytes_read:
+                raise Exception("Invalid data response, size is not as promised")
 
-        async def master():
-            nonlocal ok
-            offset = 0
-            size = fi.size()
-            while ok:
+            out.seek(offset)            
+            out.write(chunk)
+            remaining -= bytes_read
+            offset += bytes_read
+        # print(f"chunk of {length} bytes copied at offset {offset - length}")
+        return length
+
+    async def _async_get_to_file(self, queue, src, out, update_cb=None):
+        src = self._resolve(src)
+        fi = await self._async_call_with_session(self._async_get_status, src)
+        size = fi.size()
+
+        response_queue = asyncio.Queue()
+        active_tasks = 0 # we count the request we have queued
+        bytes_copied = 0
+        offset = 0
+
+        try:
+            while True:
+                while True:
+                    try:
+                        res = response_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    active_tasks -= 1
+                    bytes_copied += self._unwrap_response(res)
+                    if update_cb:
+                        await update_cb(size, bytes_copied)
+                    
                 next_offset = min(offset + self.chunk_size, size)
                 length = next_offset - offset
                 if length <= 0:
                     break
-                #print(f"Queueing offset {offset}, length {length}...");
-                await queue.put({ "offset": offset, "length": length })
+
+                await self._queue_task(queue,
+                                       self._async_get_chunk,
+                                       response_queue=response_queue,
+                                       path=src, offset=offset, length=length,
+                                       out=out)
+                active_tasks += 1
                 offset = next_offset
 
-            for _ in range(self.workers):
-                await queue.put(None)
+            while active_tasks > 0:
+                res = await response_queue.get()
+                active_tasks -= 1
+                bytes_copied += self._unwrap_response(res)
+                if update_cb:
+                    await update_cb(size, bytes_copied)
 
-        async def all(update_cb=None):
-            slaves = [slave(update_cb) for _ in range(self.workers)]
-            await asyncio.gather(master(), *slaves)
+        finally:
+            for _ in range(active_tasks):
+                try: await response_queue.get()
+                except: pass
 
-        with progressbar.ProgressBar(max_value = fi.size()) as bar:
-            total_bytes = 0
-            def update_cb(bytes_read):
-                nonlocal total_bytes
-                total_bytes += bytes_read
-                bar.update(total_bytes)
+        return fi
             
+
+    def get_to_file(self, src, out):
+
+        (swarm, queue, end) = self._new_swarm(self.workers, self.workers * 2)
+
+        with progressbar.DataTransferBar() as bar:
+            async def update_cb(size, read):
+                bar.max_value = size
+                bar.update(read)
+
+            result = None
+            async def control():
+                nonlocal result
+                try:
+                    result = await self._async_get_to_file(queue, src, out, update_cb)
+                finally:
+                    await end()
+                
             loop = asyncio.get_event_loop()
-            loop.run_until_complete(all(update_cb))
-
-        if ok:
-            return fi
-        raise Exception("file copy failed")
-
+            loop.run_until_complete(asyncio.gather(control(), swarm))
+            return result
 
 class CLI(cmd.Cmd):
 
@@ -450,10 +409,12 @@ class CLI(cmd.Cmd):
         self._set_prompt()
         self._debug = True
 
-    def cfg(self, section, key):
+    def cfg(self, section, key, default=None):
         try:
             return self._cfg[section][key]
         except:
+            if default is not None:
+                return default
             raise Exception(f"Configuration entry {key} missing in section {section}")
 
     def cfg_int(self, section, key):
@@ -596,6 +557,26 @@ class CLI(cmd.Cmd):
         except:
             self._tell_error(f"{arg}: put failed")
 
+    def _get_to_temp(self, src, prefix=".tmp-", suffix=None, **kwargs):
+        try:
+            if suffix is None:
+                bn = os.path.basename(src)
+                try: suffix = bn[bn.rindex("."):]
+                except: suffix = ""
+
+            (f, target) = tempfile.mkstemp(prefix=prefix, suffix=suffix, **kwargs)
+            out = os.fdopen(f, "wb")
+            self._dbfs.get_to_file(src, out)
+            out.close()
+            return target
+        
+        except Exception as ex:
+            try: out.close()
+            except: pass
+            try: os.remove(tmp_fn)
+            except: pass
+            raise ex
+            
     def do_get(self, arg):
         try:
             src, target = self._parse(arg, ".", min=1)
@@ -608,49 +589,19 @@ class CLI(cmd.Cmd):
             parent_dir, _ = os.path.split(target)
             self._mkdir(parent_dir)
 
-            (f, tmp_fn) = tempfile.mkstemp(prefix=".transferring-", dir=parent_dir)
-            out = os.fdopen(f, "wb")
-            try:
-                start = time.time()
-                fi = self._dbfs.get_to_file(src, out)
-                delta = max(1, time.time() - start)
-                out.close()
-                
-                os.rename(tmp_fn, target)
-                
-                size = fi.size()
-                bps = size / delta
-                print(f"{size} bytes copied in {int(delta)} seconds ({self._format_size(bps)}bps)")
-
-            finally:
-                try: out.close()
-                except: pass
-                try: os.remove(tmp_fn)
-                except: pass
+            tmp_target = self._get_to_temp(src, prefix=".transferring-", suffix="", dir=parent_dir)
+            os.rename(tmp_target, target)
                 
         except:
             self._tell_error(f"{arg}: unable to retrieve remote file")
 
     def _get_and_call(self, src, cb):
+        target = self._get_to_temp(src)
         try:
-            try:
-                bn = os.path.basename(src)
-                suffix = bn[bn.rindex("."):]
-            except:
-                suffix = ""
-            (f, tmp_fn) = tempfile.mkstemp(prefix=".tmp-", suffix=suffix)
-            out = os.fdopen(f, "wb")
-            try:
-                fi = self._dbfs.get_to_file(src, out)
-                out.close()
-                subprocess.run([self.cfg("fastdbfs", "pager"), '--', tmp_fn])
-            finally:
-                try: out.close()
-                except: pass
-                try: os.remove(tmp_fn)
-                except: pass
-        except:
-            self._tell_error(f"{arg}: unable to retrieve remote file")
+            cb(target)
+        finally:
+            try: os.remove(target)
+            except: pass
 
     def do_rm(self, arg):
         try:
@@ -660,15 +611,51 @@ class CLI(cmd.Cmd):
         except:
             self._tell_error(f"{arg}: unable to remove remote file")
             
-    def do_more(self, arg):
-        src, = self._parse(arg, min=1)
-        pager = self.cfg("fastdbfs", "pager")
-        def cb(fn):
-            subprocess.run([pager, "--", fn])
-        self._get_and_call(arg, cb)
+    def do_more(self, arg, pager=None):
+        try:
+            src, = self._parse(arg, min=1)
+            if pager is None:
+                pager = self.cfg("fastdbfs", "pager")
+            def cb(fn):
+                subprocess.run([pager, "--", fn])
+            self._get_and_call(arg, cb)
+        except:
+            self._tell_error(f"{arg}: unable to show file")
 
+    def do_edit(self, arg, editor=None):
+        try:
+            src, = self._parse(arg, min=1)
+            if editor is None:
+                editor = self.cfg("fastdbfs", "editor", default=os.environ.get("EDITOR", "vi"))
+
+            def cb(tmp_fn):
+                # in order to avoid race conditions we force the mtime
+                # of the temporal file into the past
+                the_past = int(time.time() - 2)
+                os.utime(tmp_fn, times=(the_past, the_past))
+                subprocess.run([editor, "--", tmp_fn])
+                stat_after = os.stat(tmp_fn)
+                if (stat_after.st_mtime_ns > the_past):
+                    with open(tmp_fn, "rb") as infile:
+                        self._dbfs.put_from_file(infile, src, size=stat_after.st_size, overwrite=True)
+                else:
+                    raise Exception(f"File was not modified!")
+
+            self._get_and_call(arg, cb)
+        except:
+            self._tell_error(f"{arg}: edit failed")
+
+    def do_mg(self, arg):
+        self.do_edit(arg, editor="mg")
+
+    def do_vi(self, arg):
+        self.do_edit(arg, editor="vi")
+            
     def do_less(self, arg):
-        self.do_more(arg)
+        self.do_more(arg, pager="less")
+
+    def do_batcat(self, arg):
+        self.do_more(arg, pager="batcat")
 
     def do_shell(self, arg):
         os.system(arg)
@@ -701,5 +688,5 @@ class CLI(cmd.Cmd):
         args += defaults[len(args)-min:]
         
         return args
-
+    
 CLI().cmdloop()
