@@ -1,5 +1,8 @@
 [fastdbfs]
+
 # This is the main fastdbfs configuration.
+# It must be placed at ~/.config/fastdbfs
+
 # Uncomment the lines and customize according to your preferences!
 
 # pager=less
