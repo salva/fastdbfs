@@ -8,9 +8,10 @@
 
 [DEFAULT]
 
-# This is the default Databricks environment used by fastdbfs
-# Note that these definitions can be stored in ~/.databrickscfg. That
-# way they are shared with other Databricks utilities.
+# This is the configuration for the default Databricks environment
+# used by fastdbfs Note that these definitions can be stored in
+# ~/.databrickscfg. That way they are shared with other Databricks
+# utilities.
 
 host = https://westeurope.azuredatabricks.net
 token = dapi1234567890abcdef1234567890abcdef
