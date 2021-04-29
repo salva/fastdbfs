@@ -3,9 +3,9 @@
 `fastdbfs` is an interactive command line client for Databricks DBFS
 API with the aim of being fast, friendly and feature rich.
 
-`fastdbfs` is still a work in alpha state and anything may change at
-this point. Also, you should expect bugs and even data corruption or
-data lost at times.
+`fastdbfs` is still in alpha state. Anything may change at this
+point. You should expect bugs and even data corruption or data
+lost at times.
 
 Comments, bug reports, ideas and patches or pull requests are very
 welcome.
