@@ -1,0 +1,26 @@
+[fastdbfs]
+# This is the main fastdbfs configuration.
+# Uncomment the lines and customize according to your preferences!
+
+# pager=less
+# editor=vi
+
+
+[DEFAULT]
+
+# This is the default Databricks environment used by fastdbfs
+# Note that these definitions can be stored in ~/.databrickscfg. That
+# way they are shared with other Databricks utilities.
+
+host = https://westeurope.azuredatabricks.net
+token = dapi1234567890abcdef1234567890abcdef
+cluster_id = 0111-222222-yoooh666
+
+
+[my-other-environment]
+
+# Another Databricks environment.
+
+host = https://westeurope.azuredatabricks.net
+token = dapi0123456789abcdef0123456789abcdef
+cluster_id = 0222-222222-yoooh666
