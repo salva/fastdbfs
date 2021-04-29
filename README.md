@@ -1,8 +1,3 @@
----
-name: fastdbfs
-about: Interactive command line client for Databricks DBFS API
----
-
 # Introduction
 
 `fastdbfs` is an interactive command line client for Databricks DBFS
