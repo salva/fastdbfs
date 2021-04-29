@@ -610,6 +610,15 @@ class CLI(cmd.Cmd):
             print("File removed");
         except:
             self._tell_error(f"{arg}: unable to remove remote file")
+
+    def do_cat(self, arg):
+        try:
+            src, = self._parse(arg, min=1)
+            def cb(fn):
+                subprocess.run(["cat", "--", fn])
+            self._get_and_call(arg, cb)
+        except:
+            self._tell_error(f"{arg}: unable to show file")
             
     def do_more(self, arg, pager=None):
         try:

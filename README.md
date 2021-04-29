@@ -30,6 +30,8 @@ welcome.
 
 * `rm file`: removes the remote file.
 
+* `cat file`: prints the contents of the remote file.
+
 * `more file`: shows the contents of the remote file.
 
 * `edit file`: retrieves the remote file, opens it in the configured
