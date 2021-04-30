@@ -14,7 +14,7 @@ welcome.
 
 * `open [profile]`: sets the Databricks profile used for
   communicating. By default it uses `DEFAULT`.
-  
+
 * `cd [directory]`: sets the remote directory.
 
 * `lcd [directory]`: sets the local directory.
@@ -23,12 +23,26 @@ welcome.
 
 * `ls [directory]`: list the contents of the given directory (or the
   current one if the argument is omitted).
-  
-* `put src [dest]`: copy the file to the remote file system.
 
-* `get src [dest]`: copy the remote file to the local filesystem.
+* `find [directory]`: list the contents of the given directory
+  recursively.
+
+* `put src [dest]`: copies the file to the remote file system.
+
+* `get src [dest]`: copies the remote file to the local filesystem.
+
+* `rput src [dest]`: copies the local directory recursively.
+
+* `rget src [dest]`: copies the remote directory recursively.
+
+* `rmdir dir`: removes the remote directory recursively.
 
 * `rm file`: removes the remote file.
+
+* `mkdir dir`: creates the directory (and any non-existent parents).
+
+* `mkcd dir`: creates the directory and sets it as the working
+  directory.
 
 * `cat file`: prints the contents of the remote file.
 
@@ -36,7 +50,7 @@ welcome.
 
 * `edit file`: retrieves the remote file, opens it in the configured
   editor and if it is changed, it copies it back.
-  
+
 * `!cmd ...`: runs the given command locally.
 
 * `exit`: exits the client.
@@ -47,6 +61,20 @@ welcome.
 `~/databrickscfg`.
 
 See the sample files accompaning the program.
+
+# Limitations
+
+The DBFS API has some limitations that `fastdbfs` can not overcome:
+
+- Directory listings timeout after 1min.
+
+- The API has a throttling mechanism that slows down operations that
+  require a high number of calls (i.e. find, rput, rget).
+
+- The methods provided for uploading data are too simplistic. They can
+  not be parallelized and in some edge cases transfers may become
+  corrupted (`fastdbfs` tries to protect against that).
+
 
 # Development and support
 
