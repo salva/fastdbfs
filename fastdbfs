@@ -192,7 +192,7 @@ class DBFS():
                     raise ex
 
 
-    async def _async_get(self, session, end_point, **params):
+    async def _async_http_get(self, session, end_point, **params):
         async def cb():
             url = urllib.parse.urljoin(self.host, end_point)
             headers = { "Authorization": "Bearer " + self.token }
@@ -204,7 +204,7 @@ class DBFS():
         return await self._async_control(cb)
 
 
-    async def _async_post(self, session, end_point, **data):
+    async def _async_http_post(self, session, end_point, **data):
         async def cb():
             url = urllib.parse.urljoin(self.host, end_point)
             headers = { "Authorization": "Bearer " + self.token,
@@ -222,8 +222,8 @@ class DBFS():
             return await cb(session, *params, **kwparams)
 
     async def _async_get_status(self, session, path):
-        r = await self._async_get(session, "api/2.0/dbfs/get-status",
-                                  path=self._resolve(path))
+        r = await self._async_http_get(session, "api/2.0/dbfs/get-status",
+                                       path=self._resolve(path))
         return FileInfo.from_json(r)
 
     def _run_with_session(self, task, *args, **kwargs):
@@ -232,17 +232,17 @@ class DBFS():
         return loop.run_until_complete(task_with_session)
 
     def _simple_get(self, end_point, **params):
-        return self._run_with_session(self._async_get, end_point, **params)
+        return self._run_with_session(self._async_http_get, end_point, **params)
 
     def _simple_post(self, end_point, **params):
-        return self._run_with_session(self._async_post, end_point, **params)
+        return self._run_with_session(self._async_http_post, end_point, **params)
 
     def get_status(self, path):
         return self._run_with_session(self._async_get_status, path)
 
     async def _async_mkdir(self, session, path):
         path = self._resolve(path)
-        await self._async_post(session, "api/2.0/dbfs/mkdirs", path=path)
+        await self._async_http_post(session, "api/2.0/dbfs/mkdirs", path=path)
 
     def mkdir(self, path):
         return self._run_with_session(self._async_mkdir, path=path)
@@ -250,7 +250,7 @@ class DBFS():
     async def _async_list(self, session, path):
         path = self._resolve(path)
         #print(f"> {path}")
-        r = await self._async_get(session, "api/2.0/dbfs/list", path=path)
+        r = await self._async_http_get(session, "api/2.0/dbfs/list", path=path)
         #print(f"listing {path} done")
         return [FileInfo.from_json(e) for e in r.get("files", [])]
 
@@ -264,8 +264,8 @@ class DBFS():
 
     async def _async_rm(self, session, path, recursive=False):
         path = self._resolve(path)
-        await self._async_post(session, "api/2.0/dbfs/delete",
-                               path=path, recursive=recursive)
+        await self._async_http_post(session, "api/2.0/dbfs/delete",
+                                    path=path, recursive=recursive)
 
     def rm(self, path, recursive=False):
         path = self._resolve(path)
@@ -285,21 +285,21 @@ class DBFS():
 
     async def _async_create(self, session, path, overwrite=False):
         path = self._resolve(path)
-        out = await self._async_post(session,
+        out = await self._async_http_post(session,
                                      "api/2.0/dbfs/create",
                                      path=path, overwrite=overwrite)
         return int(out["handle"])
 
     async def _async_add_block(self, session, handle, block):
-        return await self._async_post(session,
-                                      "api/2.0/dbfs/add-block",
-                                      data=base64.standard_b64encode(block).decode('ascii'),
-                                      handle=handle)
+        return await self._async_http_post(session,
+                                           "api/2.0/dbfs/add-block",
+                                           data=base64.standard_b64encode(block).decode('ascii'),
+                                           handle=handle)
 
     async def _async_close(self, session, handle):
-        return await self._async_post(session,
-                                      "api/2.0/dbfs/close",
-                                      handle=handle)
+        return await self._async_http_post(session,
+                                           "api/2.0/dbfs/close",
+                                           handle=handle)
 
     async def _async_put_from_file(self, session, infile, target, size=None, overwrite=False, update_cb=None):
         target = self._resolve(target)
@@ -364,9 +364,14 @@ class DBFS():
                     if cb is None:
                         return
                     try:
+                        # print(f"cb kwargs: {kwargs}")
                         value = await cb(session, **kwargs)
                         res = (task_key, value, None)
                     except Exception as ex:
+                        #_, ex, trace = sys.exc_info()
+                        #print("Stack trace:")
+                        #traceback.print_tb(trace)
+
                         res = (task_key, None, ex)
                     #print(f"Queueing response for {task_key}")
                     if response_queue:
@@ -379,10 +384,10 @@ class DBFS():
         swarm = asyncio.gather(*[worker(ix) for ix in range(workers)])
         return (swarm, queue, end)
 
-    async def _queue_task(self, queue, task,
+    async def _queue_task(self, _queue, _task,
                           task_key=None, response_queue=None,
                           **kwargs):
-        return await queue.put((task_key, task, response_queue, kwargs))
+        return await _queue.put((task_key, _task, response_queue, kwargs))
 
     def _unwrap_response(self, res):
         (_, value, ex) = res
@@ -394,9 +399,9 @@ class DBFS():
         # print(f"processing chunk at {offset}")
         remaining = length
         while remaining > 0:
-            r = await self._async_get(session,
-                                      "api/2.0/dbfs/read",
-                                      path=path, offset=offset, length=length)
+            r = await self._async_http_get(session,
+                                           "api/2.0/dbfs/read",
+                                           path=path, offset=offset, length=length)
 
             bytes_read = r["bytes_read"]
             if bytes_read == 0 or bytes_read > remaining:
@@ -413,9 +418,17 @@ class DBFS():
         # print(f"chunk of {length} bytes copied at offset {offset - length}")
         return length
 
-    async def _async_get_to_file(self, queue, src, out, update_cb=None):
+    async def _async_get(self, session, low_queue, src, target,
+                         overwrite=False, update_cb=None):
+        # FIXME: a race condition exists here!
+        if not overwrite and os.path.exists(target):
+            raise Exception("File already exists")
+        with open(target, "wb") as out:
+            await self._async_get_to_file(session, low_queue, src, out, update_cb)
+
+    async def _async_get_to_file(self, session, low_queue, src, out, update_cb=None):
         src = self._resolve(src)
-        fi = await self._async_call_with_session(self._async_get_status, src)
+        fi = await self._async_get_status(session, src)
         size = fi.size()
 
         response_queue = asyncio.Queue()
@@ -440,7 +453,7 @@ class DBFS():
                 if length <= 0:
                     break
 
-                await self._queue_task(queue,
+                await self._queue_task(low_queue,
                                        self._async_get_chunk,
                                        response_queue=response_queue,
                                        path=src, offset=offset, length=length,
@@ -472,11 +485,13 @@ class DBFS():
                 bar.max_value = size
                 bar.update(read)
 
+
             result = None
             async def control():
                 nonlocal result
                 try:
-                    result = await self._async_get_to_file(queue, src, out, update_cb)
+                    result = await self._async_call_with_session(self._async_get_to_file,
+                                                                 queue, src, out, update_cb)
                 finally:
                     await end()
 
@@ -557,7 +572,80 @@ class DBFS():
 
     async def _async_rget(self, session, src, target, update_cb=None):
         src = self._resolve(src)
-        # TBD
+
+        # We use two worker queues here, low is for the low level
+        # requests. We pass it to the _self_get method without ever
+        # using it directly. high_queue is for parallelizing the
+        # _self_get calls.
+
+        (high_swarm, high_queue, high_end) = self._new_swarm(self.workers, self.workers * 2)
+        (low_swarm, low_queue, low_end) = self._new_swarm(self.workers, self.workers * 2)
+        response_queue = asyncio.Queue()
+        active_gets = 0
+
+        async def empty_response_queue():
+            nonlocal active_gets
+            while True:
+                try:
+                    (relpath, res, ex) = response_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                active_gets -= 1
+                ok = ex is None
+                await update_cb(relpath, ok, ex)
+
+        async def find_cb(fi, ok, ex):
+            nonlocal active_gets
+
+            # We empty the response_queue everytime this function is called.
+            await empty_response_queue()
+
+            # print(f"entry found: {fi.abspath()}, ok: {ok}, ex: {ex}")
+
+            remote_path = fi.abspath()
+            relpath = fi.relpath(src)
+            local_path = os.path.abspath(os.path.join(target, relpath))
+
+            if fi.is_dir():
+                try:
+                    # print(f"creating local path {local_path}")
+                    os.mkdir(local_path)
+                except Exception as ex:
+                    if not os.path.isdir(local_path):
+                        if update_cb:
+                            await update_cb(relpath, False, ex)
+            else:
+                await self._queue_task(high_queue,
+                                       self._async_get,
+                                       task_key=relpath,
+                                       response_queue=response_queue,
+                                       low_queue=low_queue, src=remote_path, target=local_path)
+                active_gets += 1
+
+        # So, here we go!
+        # First we run the find task...
+        await self._async_find(session, src, find_cb)
+
+        # Then we finish the high level queue...
+        await high_end()
+
+        # Remove any pending notification from response_queue...
+        while active_gets > 0:
+            (relpath, res, ex) = await response_queue.get()
+            active_gets -= 1
+            ok = ex is None
+            await update_cb(relpath, ok, ex)
+
+        # And finally terminate the low queue...
+        await low_end()
+
+
+    def rget(self, src, target, update_cb=None):
+        async def _async_update_cb(*args):
+            update_cb(*args)
+        self._run_with_session(self._async_rget,
+                               src, target,
+                               _async_update_cb if update_cb else None)
 
     async def _async_rput(self, session, src, target, update_cb=None):
         target = self._resolve(target)
@@ -875,6 +963,14 @@ class CLI(cmd.Cmd):
         except:
             self._tell_error(f"{arg}: unable to recursively list remote dir");
 
+    def _rgetput_update_cb(self, path, ok, ex):
+        if ok:
+            print(f"{path} ok!")
+        elif ex is None:
+            print(f"{path} FAILED!")
+        else:
+            print(f"{path} FAILED {ex}!")
+
     def do_rput(self, arg):
         try:
             src, target = self._parse(arg, None, min=1)
@@ -885,17 +981,23 @@ class CLI(cmd.Cmd):
                 else:
                     target = os.path.basename(normalized_src)
 
-            def update_cb(path, ok, ex):
-                if ok:
-                    print(f"{path} ok!")
-                elif ex is None:
-                    print(f"{path} FAILED!")
-                else:
-                    print(f"{path} FAILED {ex}!")
-
-            self._dbfs.rput(src, target, update_cb)
+            self._dbfs.rput(src, target, self._rgetput_update_cb)
         except:
             self._tell_error(f"{arg}: rput failed")
+
+    def do_rget(self, arg):
+        try:
+            src, target = self._parse(arg, None, min=1)
+            normalized_src = os.path.normpath(src)
+            if target is None:
+                if normalized_src == "." or normalized_src == "/":
+                    target = "."
+                else:
+                    target = os.path.basename(normalized_src)
+
+            self._dbfs.rget(src, target, self._rgetput_update_cb)
+        except:
+            self._tell_error(f"{arg}: rget failed")
 
     def do_cat(self, arg):
         try:
