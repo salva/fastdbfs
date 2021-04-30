@@ -77,6 +77,22 @@ See the sample files accompaning the program.
       not be parallelized and in some edge cases transfers may become
       corrupted (`fastdbfs` tries to protect against that).
 
+# TODO
+
+* Add more commands: mirror, rget, mget, mput, glob, etc.
+
+* Improve command line parsing allowing for command flags, pipes,
+  redirections, etc.
+
+* Autocomplete
+
+* Help system
+
+* Better usability
+
+* Make into a Python module
+
+* Break the code in several modules.
 
 # Development and support
 
