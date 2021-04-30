@@ -26,15 +26,28 @@ class FileInfo():
                         json["file_size"],
                         json["modification_time"],
                         json["path"])
-    
+
     def __init__(self, is_dir, size, mtime, abspath):
         self._is_dir = is_dir
         self._size = size
         self._mtime = mtime
         self._abspath = abspath
 
-    def path(self):
+    def basename(self):
         return os.path.basename(self._abspath)
+
+    def abspath(self):
+        return self._abspath
+
+    def relpath(self, base):
+        path = self.abspath()
+        if base == "/":
+            return path
+        if path == base:
+            return "."
+        if path.startswith(base) and path[len(base)] == "/":
+            return path[(len(base)+1):]
+        return path
 
     def is_dir(self):
         return self._is_dir
@@ -52,11 +65,14 @@ class APIError(Exception):
     def __init__(self, error_code, message):
         super().__init__(message)
         self.error_code = error_code
-    
+
+class RateError(Exception):
+    pass
+
 class Disconnected():
     def __init__(self):
         pass
-    
+
     def __getattr__(self, method):
         raise Exception("open must be called first!")
 
@@ -79,27 +95,39 @@ class DBFS():
         self.max_retries = max_retries
         self.error_delay = error_delay
         self.error_delay_increment = error_delay_increment
+        self.wait_until = 0
 
         self.semaphore = asyncio.Semaphore(workers)
-        
+
         # print(f"host: {self.host}, cluster: {self.cluster_id}, token: {self.token}")
 
     def check(self):
         self._assert_dir(".")
-        
+
     def _resolve(self, path):
         return os.path.normpath(os.path.join(self.path, path))
 
     def prompt(self):
-        return f"{self.id}:{self.path}$ "
-    
+        if self.id == "DEFAULT":
+            return f"{self.path}$ "
+        else:
+            return f"{self.id}:{self.path}$ "
+
     def cd(self, path):
         path = self._resolve(path)
         self._assert_dir(path)
         self.path = path
-        
+
     async def _unpack_response(self, response):
         status = response.status
+
+        if response.headers.get("x-envoy-ratelimited", None) == "true":
+            # print(f"Too many requests: {response.headers}")
+            raise RateError("Too many requests")
+
+        if "content-type" not in response.headers:
+            print(f"Response headers: {response.headers}")
+
         ct = response.headers['content-type']
         if ct != "application/json":
             raise Exception(f"Unexpected response received from API, Content-type: {ct}, HTTP status: {status}")
@@ -112,7 +140,7 @@ class DBFS():
         except Exception as ex:
             raise Exception("Unable to retrieve API response") from ex
 
-        if status == 200:        
+        if status == 200:
             return data
 
         try:
@@ -128,17 +156,29 @@ class DBFS():
         while True:
             async with self.semaphore:
                 try:
+                    delta = self.wait_until - time.time()
+                    if delta > 0:
+                        # print(f"Delaying for {delta} seconds")
+                        await asyncio.sleep(delta)
                     return await cb()
+                except RateError as ex:
+                    self.wait_until = time.time() + 1
+                    # we do not increase the retries count when a
+                    # RateError pops up!
                 except OSError as ex:
                     if retries > self.max_retries:
                         raise ex
-                except Exception as ex:
-                    print(f"Exception caught: {ex}")
+                    # We keep the semaphore while we sleep in order to
+                    # reduce the pressure on the remote side.
+                    await asyncio.sleep(self.error_delay + self.error_delay_increment * retries)
+                    retries += 1
+
+                except:
+                    _, ex, trace = sys.exc_info()
+                    print("Stack trace:")
+                    traceback.print_tb(trace)
                     raise ex
-                # We keep the semaphore while we sleep in order to
-                # reduce the pressure on the remote side.
-                await asyncio.sleep(self.error_delay + self.error_delay_increment * retries)
-                retries += 1
+
 
     async def _async_get(self, session, end_point, **params):
         async def cb():
@@ -168,9 +208,10 @@ class DBFS():
     async def _async_call_with_session(self, cb, *params, **kwparams):
         async with aiohttp.ClientSession() as session:
             return await cb(session, *params, **kwparams)
-    
+
     async def _async_get_status(self, session, path):
-        r = await self._async_get(session, "api/2.0/dbfs/get-status", path=self._resolve(path))
+        r = await self._async_get(session, "api/2.0/dbfs/get-status",
+                                  path=self._resolve(path))
         return FileInfo.from_json(r)
 
     def _run_with_session(self, task, *args, **kwargs):
@@ -183,9 +224,16 @@ class DBFS():
 
     def _simple_post(self, end_point, **params):
         return self._run_with_session(self._async_post, end_point, **params)
-            
+
     def get_status(self, path):
         return self._run_with_session(self._async_get_status, path)
+
+    async def _async_list(self, session, path):
+        path = self._resolve(path)
+        #print(f"> {path}")
+        r = await self._async_get(session, "api/2.0/dbfs/list", path=path)
+        #print(f"listing {path} done")
+        return [FileInfo.from_json(e) for e in r.get("files", [])]
 
     def ls(self, path):
         path = self._resolve(path)
@@ -202,7 +250,7 @@ class DBFS():
         self._simple_post("api/2.0/dbfs/delete",
                           path=self._resolve(path),
                           recursive=False)
-        
+
     def _assert_dir(self, path):
         if not self.get_status(path).is_dir():
             raise Exception("Not a directory")
@@ -218,13 +266,13 @@ class DBFS():
         return await self._async_post(session,
                                       "api/2.0/dbfs/add-block",
                                       data=base64.standard_b64encode(block).decode('ascii'),
-                                      handle=handle)        
+                                      handle=handle)
 
     async def _async_close(self, session, handle):
         return await self._async_post(session,
                                       "api/2.0/dbfs/close",
                                       handle=handle)
-    
+
     async def _async_put_from_file(self, session, infile, target, size=None, overwrite=False, update_cb=None):
         target = self._resolve(target)
 
@@ -253,54 +301,58 @@ class DBFS():
             try: await self._async_rm(target)
             except: pass
             raise ex
-    
+
     def put_from_file(self, infile, target, size=None, overwrite=False):
 
         with progressbar.DataTransferBar() as bar:
             if size is not None:
-                bar.max_value = size 
-        
+                bar.max_value = size
+
             async def update_cb(size, bytes_read):
                 bar.update(bytes_read)
-                
+
             return self._run_with_session(self._async_put_from_file,
                                           infile, target, size, overwrite,
                                           update_cb)
 
-    def _new_swarm(self, workers, queue_max_size):
+    def _new_swarm(self, workers, queue_max_size, use_priority_queue=False):
 
-        queue = asyncio.Queue(maxsize = queue_max_size)
-    
+        queue_class = asyncio.PriorityQueue if use_priority_queue else asyncio.Queue
+        # print(f"allocating queue of class {queue_class}")
+        queue = queue_class(maxsize = queue_max_size)
+
         async def worker(ix):
             # print(f"worker {ix} started")
-            
+
             async with aiohttp.ClientSession() as session:
                 while True:
                     # print(f"worker {ix}  waiting for tasks")
-                    task = await queue.get()
-                    if task is None:
+                    (task_key, cb, response_queue, kwargs) = await queue.get()
+                    if cb is None:
                         return
-                    (cb, response_queue, kwargs) = task
                     try:
                         value = await cb(session, **kwargs)
-                        res = (value, None)
+                        res = (task_key, value, None)
                     except Exception as ex:
-                        res = (None, ex)
+                        res = (task_key, None, ex)
+                    #print(f"Queueing response for {task_key}")
                     if response_queue:
                         await response_queue.put(res)
 
         async def end():
-            for _ in range(workers):
-                await queue.put(None)
-                        
+            for ix in range(workers):
+                await self._queue_task(queue, None, task_key=ix)
+
         swarm = asyncio.gather(*[worker(ix) for ix in range(workers)])
         return (swarm, queue, end)
 
-    async def _queue_task(self, queue, task, response_queue=None, **kwargs):
-        return await queue.put((task, response_queue, kwargs))
+    async def _queue_task(self, queue, task,
+                          task_key=None, response_queue=None,
+                          **kwargs):
+        return await queue.put((task_key, task, response_queue, kwargs))
 
     def _unwrap_response(self, res):
-        (value, ex) = res
+        (_, value, ex) = res
         if ex is not None:
             raise ex
         return value
@@ -312,7 +364,7 @@ class DBFS():
             r = await self._async_get(session,
                                       "api/2.0/dbfs/read",
                                       path=path, offset=offset, length=length)
-        
+
             bytes_read = r["bytes_read"]
             if bytes_read == 0 or bytes_read > remaining:
                 raise Exception("Invalid data response")
@@ -321,7 +373,7 @@ class DBFS():
             if len(chunk) != bytes_read:
                 raise Exception("Invalid data response, size is not as promised")
 
-            out.seek(offset)            
+            out.seek(offset)
             out.write(chunk)
             remaining -= bytes_read
             offset += bytes_read
@@ -349,7 +401,7 @@ class DBFS():
                     bytes_copied += self._unwrap_response(res)
                     if update_cb:
                         await update_cb(size, bytes_copied)
-                    
+
                 next_offset = min(offset + self.chunk_size, size)
                 length = next_offset - offset
                 if length <= 0:
@@ -376,7 +428,7 @@ class DBFS():
                 except: pass
 
         return fi
-            
+
 
     def get_to_file(self, src, out):
 
@@ -394,16 +446,87 @@ class DBFS():
                     result = await self._async_get_to_file(queue, src, out, update_cb)
                 finally:
                     await end()
-                
+
             loop = asyncio.get_event_loop()
             loop.run_until_complete(asyncio.gather(control(), swarm))
             return result
+
+    async def _async_find(self, session, path, update_cb):
+        path = self._resolve(path)
+        root_fi = await self._async_get_status(session, path)
+
+        if not root_fi.is_dir():
+            await update_cb(root_fi, True, None)
+            return
+
+        response_queue = asyncio.Queue()
+        (swarm, queue, end) = self._new_swarm(workers = self.workers,
+                                              queue_max_size = self.workers,
+                                              use_priority_queue=True)
+
+        async def control():
+            await self._queue_task(queue,
+                                   self._async_list,
+                                   task_key = path,
+                                   response_queue = response_queue,
+                                   path = path)
+
+            pending = [[path, root_fi, None, None]] # path, fileinfo, ok, exception
+
+            while pending:
+                (key, fis, ex) = await response_queue.get()
+                # update the entry
+                for e in pending:
+                    if e[0] == key:
+                        if ex:
+                            e[2] = False
+                            e[3] = ex
+                        else:
+                            e[2] = True
+                        break
+                else:
+                    raise Exception("Internal error, key not found in pending")
+
+                if fis:
+                    # add the new entries
+                    pending += [[fi.abspath(), fi,
+                                 None if fi.is_dir() else True,
+                                 None]
+                                for fi in fis]
+                    pending.sort()
+
+                    # request their listings
+                    for fi in fis:
+                        if fi.is_dir():
+                            #print(f"< {fi.abspath()}")
+                            await self._queue_task(queue,
+                                                   self._async_list,
+                                                   task_key = fi.abspath(),
+                                                   response_queue = response_queue,
+                                                   path = fi.abspath())
+
+                # finally report entries ready from the top
+                while pending and pending[0][2] is not None:
+                    head = pending.pop(0)
+                    await update_cb(head[1], head[2], head[3])
+            await end()
+        await asyncio.gather(control(), swarm)
+
+
+    def find(self, path, update_cb):
+        path = self._resolve(path)
+
+        async def _async_update_cb(fi, ok, ex):
+            update_cb(fi, ok, ex)
+
+        self._run_with_session(self._async_find,
+                               path,
+                               _async_update_cb)
 
 class CLI(cmd.Cmd):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-
         self._init_cfg()
         self._dbfs = Disconnected()
         self._set_prompt()
@@ -423,7 +546,7 @@ class CLI(cmd.Cmd):
             return int(v)
         except:
             raise Exception(f"Configuration entry {key} is not an integer")
-        
+
     def _init_cfg(self):
         self._cfg = configparser.ConfigParser()
         self._cfg["fastdbfs"] = {
@@ -437,15 +560,15 @@ class CLI(cmd.Cmd):
 
         home = os.path.expanduser("~")
         fns = [os.path.join(home, fn) for fn in (".databrickscfg", ".fastdbfs", ".config/fastdbfs")]
-        self._cfg.read(fns)    
-        
+        self._cfg.read(fns)
+
     def _tell_error(self, msg):
         _, ex, trace = sys.exc_info()
         print(f"{msg}: {ex}")
         if self._debug:
             print("Stack trace:")
             traceback.print_tb(trace)
-        
+
     def do_open(self, arg):
         try:
             id, = self._parse(arg, "DEFAULT")
@@ -456,7 +579,7 @@ class CLI(cmd.Cmd):
                         chunk_size = self.cfg_int("fastdbfs", "chunk_size"),
                         workers = self.cfg_int("fastdbfs", "workers"),
                         max_retries = self.cfg_int("fastdbfs", "max_retries"))
-            
+
             dbfs.check()
             self._dbfs = dbfs
         except:
@@ -493,7 +616,7 @@ class CLI(cmd.Cmd):
                 row = (e.type(),
                        self._format_size(e.size()),
                        self._format_time(e.mtime()),
-                       e.path())
+                       e.basename())
 
                 # print(f"row: {row}")
                 type_len = max(type_len, len(row[0]))
@@ -548,7 +671,7 @@ class CLI(cmd.Cmd):
             print(f"copying to {target}")
 
             size = os.stat(src).st_size
-            
+
             with open(src, "rb") as infile:
                 start = time.time()
                 self._dbfs.put_from_file(infile, target, size=size)
@@ -569,14 +692,14 @@ class CLI(cmd.Cmd):
             self._dbfs.get_to_file(src, out)
             out.close()
             return target
-        
+
         except Exception as ex:
             try: out.close()
             except: pass
             try: os.remove(tmp_fn)
             except: pass
             raise ex
-            
+
     def do_get(self, arg):
         try:
             src, target = self._parse(arg, ".", min=1)
@@ -591,7 +714,7 @@ class CLI(cmd.Cmd):
 
             tmp_target = self._get_to_temp(src, prefix=".transferring-", suffix="", dir=parent_dir)
             os.rename(tmp_target, target)
-                
+
         except:
             self._tell_error(f"{arg}: unable to retrieve remote file")
 
@@ -611,6 +734,25 @@ class CLI(cmd.Cmd):
         except:
             self._tell_error(f"{arg}: unable to remove remote file")
 
+    def do_find(self, arg):
+        try:
+            path, = self._parse(arg, ".")
+            path = self._dbfs._resolve(path)
+
+            def update_cb(fi, ok, ex):
+                print("{:>4} {:>7} {:>19} {}".format(fi.type(),
+                                                     self._format_size(fi.size()),
+                                                     self._format_time(fi.mtime()),
+                                                     fi.relpath(path)))
+                if ex:
+                    print("# Unable to recurse into {fi.relpath(path)}, {ex}")
+                    raise ex
+
+            self._dbfs.find(path, update_cb)
+
+        except:
+            self._tell_error(f"{arg}: unable to recursively list remote dir");
+
     def do_cat(self, arg):
         try:
             src, = self._parse(arg, min=1)
@@ -619,7 +761,7 @@ class CLI(cmd.Cmd):
             self._get_and_call(arg, cb)
         except:
             self._tell_error(f"{arg}: unable to show file")
-            
+
     def do_more(self, arg, pager=None):
         try:
             src, = self._parse(arg, min=1)
@@ -659,7 +801,7 @@ class CLI(cmd.Cmd):
 
     def do_vi(self, arg):
         self.do_edit(arg, editor="vi")
-            
+
     def do_less(self, arg):
         self.do_more(arg, pager="less")
 
@@ -676,16 +818,21 @@ class CLI(cmd.Cmd):
     def do_exit(self, arg):
         print("Bye!")
         return True
-    
+
     def _set_prompt(self):
         if self._dbfs:
             self.prompt = self._dbfs.prompt()
         else:
             self.prompt = "*disconnected* "
-            
+
     def postcmd(self, stop, line):
         self._set_prompt()
         return stop
+
+    def preloop(self):
+        if self.cfg("DEFAULT", "token", None) is not None:
+            self.do_open("")
+        self._set_prompt()
 
     def _parse(self, arg, *defaults, min=0, max=None):
         args = shlex.split(arg)
@@ -695,7 +842,7 @@ class CLI(cmd.Cmd):
             raise Exception("wrong number of arguments")
 
         args += defaults[len(args)-min:]
-        
+
         return args
-    
+
 CLI().cmdloop()
