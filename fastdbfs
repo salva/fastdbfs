@@ -17,6 +17,7 @@ import tempfile
 import json
 import zlib
 import progressbar
+import stat
 
 class FileInfo():
 
@@ -26,6 +27,15 @@ class FileInfo():
                         json["file_size"],
                         json["modification_time"],
                         json["path"])
+
+    @staticmethod
+    def from_local(filename):
+        path = os.path.abspath(filename)
+        st = os.stat(path)
+        return FileInfo(stat.S_ISDIR(st.st_mode),
+                        st.st_size,
+                        st.st_mtime,
+                        path)
 
     def __init__(self, is_dir, size, mtime, abspath):
         self._is_dir = is_dir
@@ -41,8 +51,8 @@ class FileInfo():
 
     def relpath(self, base):
         path = self.abspath()
-        if base == "/":
-            return path
+        #if base == "/":
+        #    return path
         if path == base:
             return "."
         if path.startswith(base) and path[len(base)] == "/":
@@ -122,7 +132,7 @@ class DBFS():
         status = response.status
 
         if response.headers.get("x-envoy-ratelimited", None) == "true":
-            # print(f"Too many requests: {response.headers}")
+            # print(f"Too many requests!")
             raise RateError("Too many requests")
 
         if "content-type" not in response.headers:
@@ -228,6 +238,13 @@ class DBFS():
     def get_status(self, path):
         return self._run_with_session(self._async_get_status, path)
 
+    async def _async_mkdir(self, session, path):
+        path = self._resolve(path)
+        await self._async_post(session, "api/2.0/dbfs/mkdirs", path=path)
+
+    def mkdir(self, path):
+        return self._run_with_session(self._async_mkdir, path=path)
+
     async def _async_list(self, session, path):
         path = self._resolve(path)
         #print(f"> {path}")
@@ -239,17 +256,19 @@ class DBFS():
         path = self._resolve(path)
         fi = self.get_status(path)
         if fi.is_dir():
-            r = self._simple_get("api/2.0/dbfs/list", path=path)
-            if "files" in r:
-                return [FileInfo.from_json(e) for e in r["files"]]
-            return []
+            return self._run_with_session(self._async_list, path=path)
         else:
             return [fi]
 
-    def rm(self, path):
-        self._simple_post("api/2.0/dbfs/delete",
-                          path=self._resolve(path),
-                          recursive=False)
+    async def _async_rm(self, session, path, recursive=False):
+        path = self._resolve(path)
+        await self._async_post(session, "api/2.0/dbfs/delete",
+                               path=path, recursive=recursive)
+
+    def rm(self, path, recursive=False):
+        path = self._resolve(path)
+        self._run_with_session(self._async_rm,
+                               path=path, recursive=recursive)
 
     def _assert_dir(self, path):
         if not self.get_status(path).is_dir():
@@ -314,6 +333,11 @@ class DBFS():
             return self._run_with_session(self._async_put_from_file,
                                           infile, target, size, overwrite,
                                           update_cb)
+
+    async def _async_put(self, session, src, target, **kwargs):
+        size = os.stat(src).st_size
+        with open(src, "rb") as infile:
+            return await self._async_put_from_file(session, infile, target, size, **kwargs)
 
     def _new_swarm(self, workers, queue_max_size, use_priority_queue=False):
 
@@ -512,7 +536,6 @@ class DBFS():
             await end()
         await asyncio.gather(control(), swarm)
 
-
     def find(self, path, update_cb):
         path = self._resolve(path)
 
@@ -522,6 +545,78 @@ class DBFS():
         self._run_with_session(self._async_find,
                                path,
                                _async_update_cb)
+
+    async def _async_rget(self, session, src, target, update_cb=None):
+        src = self._resolve(src)
+        # TBD
+
+
+    async def _async_rput(self, session, src, target, update_cb=None):
+        target = self._resolve(target)
+        local_root_fi = FileInfo.from_local(src)
+
+        (swarm, queue, end) = self._new_swarm(self.workers, self.workers * 2)
+        response_queue = asyncio.Queue()
+
+        async def control():
+            active_puts = 0
+            for (dir, _, filenames) in os.walk(src):
+                local_fi = FileInfo.from_local(dir)
+                relpath = local_fi.relpath(local_root_fi.abspath())
+                remote_path = self._resolve(os.path.join(target, relpath))
+                local_path = os.path.join(src, relpath)
+
+                status = None
+                try:
+                    await self._async_mkdir(session, path=remote_path)
+                    if update_cb:
+                        await update_cb(local_path, True, None)
+
+                except Exception as ex:
+                    if update_cb:
+                        await update_cb(local_path, False, ex)
+                        for fn in filenames:
+                            await update_cb(os.path.join(local_path, fn), False, None)
+
+                else:
+                    for fn in filenames:
+                        local_child_path = os.path.join(local_path, fn)
+                        remote_child_path = self._resolve(os.path.join(remote_path, fn))
+                        #print(f"remote_child_path: {remote_child_path}")
+                        await self._queue_task(queue,
+                                               self._async_put,
+                                               task_key=local_child_path,
+                                               src=local_child_path,
+                                               target=remote_child_path,
+                                               response_queue=response_queue)
+                        active_puts += 1
+
+
+                while True:
+                    try:
+                        (local_child_path, res, ex) = response_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    active_puts -= 1
+                    if update_cb:
+                        ok = ex is None
+                        await update_cb(local_child_path, ok, ex)
+
+            while active_puts > 0:
+                (local_child_path, res, ex) = await response_queue.get()
+                active_puts -= 1
+                if update_cb:
+                    ok = ex is None
+                    await update_cb(local_child_path, ok, ex)
+
+            await end()
+        await asyncio.gather(control(), swarm)
+
+    def rput(self, src, target, update_cb=None):
+        async def _async_update_cb(fi, ok, ex):
+            update_cb(fi, ok, ex)
+        self._run_with_session(self._async_rput, src, target,
+                               _async_update_cb if update_cb else None)
 
 class CLI(cmd.Cmd):
 
@@ -604,6 +699,13 @@ class CLI(cmd.Cmd):
     def _format_time(self, mtime):
         return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mtime/1000))
 
+    def do_mkdir(self, arg):
+        try:
+            path, = self._parse(arg, min=1)
+            self._dbfs.mkdir(path)
+        except:
+            self._tell_error(f"{path}: mkdir failed")
+
     def do_ls(self, arg):
         try:
             path, = self._parse(arg, ".")
@@ -645,7 +747,7 @@ class CLI(cmd.Cmd):
         except:
             self._tell_error("getcwd failed")
 
-    def _mkdir(self, path):
+    def _local_mkdir(self, path):
         pathlib.Path(path).mkdir(parents=True, exist_ok=True)
 
     def do_put(self, arg):
@@ -710,7 +812,7 @@ class CLI(cmd.Cmd):
                 raise Exception("file already exists")
 
             parent_dir, _ = os.path.split(target)
-            self._mkdir(parent_dir)
+            self._local_mkdir(parent_dir)
 
             tmp_target = self._get_to_temp(src, prefix=".transferring-", suffix="", dir=parent_dir)
             os.rename(tmp_target, target)
@@ -734,6 +836,14 @@ class CLI(cmd.Cmd):
         except:
             self._tell_error(f"{arg}: unable to remove remote file")
 
+    def do_rmdir(self, arg):
+        try:
+            path, = self._parse(arg, min=1)
+            self._dbfs.rm(path, recursive=True)
+            print("Dir removed");
+        except:
+            self._tell_error(f"{arg}: unable to remove remote file")
+
     def do_find(self, arg):
         try:
             path, = self._parse(arg, ".")
@@ -752,6 +862,28 @@ class CLI(cmd.Cmd):
 
         except:
             self._tell_error(f"{arg}: unable to recursively list remote dir");
+
+    def do_rput(self, arg):
+        try:
+            src, target = self._parse(arg, None, min=1)
+            normalized_src = os.path.normpath(src)
+            if target is None:
+                if normalized_src == "." or normalized_src == "/":
+                    target = "."
+                else:
+                    target = os.path.basename(normalized_src)
+
+            def update_cb(path, ok, ex):
+                if ok:
+                    print(f"{path} ok!")
+                elif ex is None:
+                    print(f"{path} FAILED!")
+                else:
+                    print(f"{path} FAILED {ex}!")
+
+            self._dbfs.rput(src, target, update_cb)
+        except:
+            self._tell_error(f"{arg}: rput failed")
 
     def do_cat(self, arg):
         try:
@@ -786,7 +918,7 @@ class CLI(cmd.Cmd):
                 os.utime(tmp_fn, times=(the_past, the_past))
                 subprocess.run([editor, "--", tmp_fn])
                 stat_after = os.stat(tmp_fn)
-                if (stat_after.st_mtime_ns > the_past):
+                if (stat_after.st_mtime > the_past):
                     with open(tmp_fn, "rb") as infile:
                         self._dbfs.put_from_file(infile, src, size=stat_after.st_size, overwrite=True)
                 else:
