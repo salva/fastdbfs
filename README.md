@@ -64,16 +64,18 @@ See the sample files accompaning the program.
 
 # Limitations
 
-The DBFS API has some limitations that `fastdbfs` can not overcome:
+* Only Linux/UNIX is currently supported. Patches welcome!!!
 
-- Directory listings timeout after 1min.
+* The DBFS API has some limitations that `fastdbfs` can not overcome:
 
-- The API has a throttling mechanism that slows down operations that
-  require a high number of calls (i.e. find, rput, rget).
+    - Directory listings timeout after 1min.
 
-- The methods provided for uploading data are too simplistic. They can
-  not be parallelized and in some edge cases transfers may become
-  corrupted (`fastdbfs` tries to protect against that).
+    - The API has a throttling mechanism that slows down operations that
+      require a high number of calls (i.e. find, rput, rget).
+
+    - The methods provided for uploading data are too simplistic. They can
+      not be parallelized and in some edge cases transfers may become
+      corrupted (`fastdbfs` tries to protect against that).
 
 
 # Development and support
