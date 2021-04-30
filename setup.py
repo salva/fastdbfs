@@ -4,12 +4,13 @@ from setuptools import setup
 
 setup(
     name='fastdbfs',
-    version='0.1',
+    version='0.2',
     description="Interactive command line client for Databricks DBFS",
     url="http://github.com/salva/fastdbfs",
     author="Salvador Fandiño García",
     author_email="sfandino@yahoo.com",
-    license='GPL-3',
+    license='GPLv3+',
+    license_files = ('LICENSE.txt',),
     packages=['fastdbfs'],
     install_requires=[ "progressbar2", "aiohttp" ],
     entry_points={'console_scripts': ['fastdbfs=fastdbfs.runner:run']}
