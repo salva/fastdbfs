@@ -1091,4 +1091,9 @@ class CLI(cmd.Cmd):
 
         return args
 
-CLI().cmdloop()
+def run():
+    CLI().cmdloop()
+
+if __name__ == '__main__':
+    run()
+
