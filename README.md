@@ -79,7 +79,7 @@ See the sample files accompaning the program.
 
 # TODO
 
-* Add more commands: mirror, rget, mget, mput, glob, etc.
+* Add more commands: mirror, mget, mput, glob, etc.
 
 * Improve command line parsing allowing for command flags, pipes,
   redirections, etc.
