@@ -17,7 +17,7 @@ setup(
     url="http://github.com/salva/fastdbfs",
     author="Salvador Fandiño García",
     author_email="sfandino@yahoo.com",
-    license='GPLv3+',
+    license='GPLv3',
     license_files = ('LICENSE.txt',),
     packages=['fastdbfs'],
     install_requires=[ "progressbar2", "aiohttp" ],
