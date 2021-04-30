@@ -564,7 +564,7 @@ class DBFS():
             for (dir, _, filenames) in os.walk(src):
                 local_fi = FileInfo.from_local(dir)
                 relpath = local_fi.relpath(local_root_fi.abspath())
-                remote_path = self._resolve(os.path.join(target, relpath))
+                remote_path = self._resolve(target, relpath)
                 local_path = os.path.join(src, relpath)
 
                 status = None
@@ -582,7 +582,7 @@ class DBFS():
                 else:
                     for fn in filenames:
                         local_child_path = os.path.join(local_path, fn)
-                        remote_child_path = self._resolve(os.path.join(remote_path, fn))
+                        remote_child_path = self._resolve(remote_path, fn)
                         #print(f"remote_child_path: {remote_child_path}")
                         await self._queue_task(queue,
                                                self._async_put,
