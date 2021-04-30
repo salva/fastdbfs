@@ -272,6 +272,13 @@ class DBFS():
         self._run_with_session(self._async_rm,
                                path=path, recursive=recursive)
 
+        # Have we removed the CWD?
+        if self.path != "/":
+            if (self.path == path or
+                (self.path.startswith(path) and self.path[len(path)] == "/")):
+                # Yes, fix it!
+                self.path = os.path.split(path)[0]
+
     def _assert_dir(self, path):
         if not self.get_status(path).is_dir():
             raise Exception("Not a directory")
@@ -682,11 +689,15 @@ class CLI(cmd.Cmd):
             self._tell_error(f"Unable to open {arg}")
 
     def do_cd(self, arg):
-        path, = self._parse(arg, "/")
         try:
+            path, = self._parse(arg, "/")
             self._dbfs.cd(path)
         except:
             self._tell_error(f"{path}: unable to change dir")
+
+    def do_mkcd(self, arg):
+        self.do_mkdir(arg)
+        self.do_cd(arg)
 
     def _format_size(self, size):
         if (size >= 1073741824):
