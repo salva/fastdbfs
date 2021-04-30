@@ -84,15 +84,20 @@ See the sample files accompaning the program.
 * Improve command line parsing allowing for command flags, pipes,
   redirections, etc.
 
-* Autocomplete
+* Autocomplete.
 
-* Help system
+* Make history persistent between sessions.
 
-* Better usability
+* Allow passing commands when the program is launched (for instance,
+  setting the default profile).
 
-* Make into a Python module
+* Help system.
 
-* Break the code in several modules.
+* Better usability.
+
+* Convert it into a Python module.
+
+* Break the code in several modules and clean it.
 
 # Development and support
 
