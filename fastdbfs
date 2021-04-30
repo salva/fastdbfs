@@ -29,8 +29,8 @@ class FileInfo():
                         json["path"])
 
     @staticmethod
-    def from_local(filename):
-        path = os.path.abspath(filename)
+    def from_local(filename, *more):
+        path = os.path.abspath(os.path.join(filename, *more))
         st = os.stat(path)
         return FileInfo(stat.S_ISDIR(st.st_mode),
                         st.st_size,
@@ -50,13 +50,15 @@ class FileInfo():
         return self._abspath
 
     def relpath(self, base):
+        base = os.path.normpath(base)
         path = self.abspath()
-        #if base == "/":
-        #    return path
         if path == base:
             return "."
-        if path.startswith(base) and path[len(base)] == "/":
-            return path[(len(base)+1):]
+        if path.startswith(base):
+            if base == "/":
+                return path[1:]
+            elif path[len(base)] == "/":
+                return path[(len(base)+1):]
         return path
 
     def is_dir(self):
@@ -114,8 +116,8 @@ class DBFS():
     def check(self):
         self._assert_dir(".")
 
-    def _resolve(self, path):
-        return os.path.normpath(os.path.join(self.path, path))
+    def _resolve(self, path, *more):
+        return os.path.normpath(os.path.join(self.path, path, *more))
 
     def prompt(self):
         if self.id == "DEFAULT":
@@ -549,7 +551,6 @@ class DBFS():
     async def _async_rget(self, session, src, target, update_cb=None):
         src = self._resolve(src)
         # TBD
-
 
     async def _async_rput(self, session, src, target, update_cb=None):
         target = self._resolve(target)
