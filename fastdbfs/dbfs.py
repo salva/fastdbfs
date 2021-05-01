@@ -10,8 +10,10 @@ import traceback
 import base64
 import json
 import progressbar
+import logging
 
 from fastdbfs.fileinfo import FileInfo
+from fastdbfs.swarm import Swarm
 
 class Disconnected():
     def __init__(self):
@@ -122,7 +124,6 @@ class DBFS():
                     traceback.print_tb(trace)
                     raise ex
 
-
     async def _async_http_get(self, session, end_point, **params):
         async def cb():
             url = urllib.parse.urljoin(self.host, end_point)
@@ -133,7 +134,6 @@ class DBFS():
                                    headers=headers) as response:
                 return await self._unpack_response(response)
         return await self._async_control(cb)
-
 
     async def _async_http_post(self, session, end_point, **data):
         async def cb():
@@ -279,53 +279,6 @@ class DBFS():
         with open(src, "rb") as infile:
             return await self._async_put_from_file(session, infile, target, size, **kwargs)
 
-    def _new_swarm(self, workers, queue_max_size, use_priority_queue=False):
-
-        queue_class = asyncio.PriorityQueue if use_priority_queue else asyncio.Queue
-        # print(f"allocating queue of class {queue_class}")
-        queue = queue_class(maxsize = queue_max_size)
-
-        async def worker(ix):
-            # print(f"worker {ix} started")
-
-            async with aiohttp.ClientSession() as session:
-                while True:
-                    # print(f"worker {ix}  waiting for tasks")
-                    (task_key, cb, response_queue, kwargs) = await queue.get()
-                    if cb is None:
-                        return
-                    try:
-                        # print(f"cb kwargs: {kwargs}")
-                        value = await cb(session, **kwargs)
-                        res = (task_key, value, None)
-                    except Exception as ex:
-                        #_, ex, trace = sys.exc_info()
-                        #print("Stack trace:")
-                        #traceback.print_tb(trace)
-
-                        res = (task_key, None, ex)
-                    #print(f"Queueing response for {task_key}")
-                    if response_queue:
-                        await response_queue.put(res)
-
-        async def end():
-            for ix in range(workers):
-                await self._queue_task(queue, None, task_key=ix)
-
-        swarm = asyncio.gather(*[worker(ix) for ix in range(workers)])
-        return (swarm, queue, end)
-
-    async def _queue_task(self, _queue, _task,
-                          task_key=None, response_queue=None,
-                          **kwargs):
-        return await _queue.put((task_key, _task, response_queue, kwargs))
-
-    def _unwrap_response(self, res):
-        (_, value, ex) = res
-        if ex is not None:
-            raise ex
-        return value
-
     async def _async_get_chunk(self, session, path, offset, length, out):
         # print(f"processing chunk at {offset}")
         remaining = length
@@ -349,15 +302,15 @@ class DBFS():
         # print(f"chunk of {length} bytes copied at offset {offset - length}")
         return length
 
-    async def _async_get(self, session, low_queue, src, target,
+    async def _async_get(self, session, low_swarm, src, target,
                          overwrite=False, update_cb=None):
         # FIXME: a race condition exists here!
         if not overwrite and os.path.exists(target):
             raise Exception("File already exists")
         with open(target, "wb") as out:
-            await self._async_get_to_file(session, low_queue, src, out, update_cb)
+            await self._async_get_to_file(session, low_swarm, src, out, update_cb)
 
-    async def _async_get_to_file(self, session, low_queue, src, out, update_cb=None):
+    async def _async_get_to_file(self, session, low_swarm, src, out, update_cb=None):
         src = self._resolve(src)
         fi = await self._async_get_status(session, src)
         size = fi.size()
@@ -375,7 +328,7 @@ class DBFS():
                     except asyncio.QueueEmpty:
                         break
                     active_tasks -= 1
-                    bytes_copied += self._unwrap_response(res)
+                    bytes_copied += Swarm.unwrap_response(res)
                     if update_cb:
                         await update_cb(size, bytes_copied)
 
@@ -384,18 +337,17 @@ class DBFS():
                 if length <= 0:
                     break
 
-                await self._queue_task(low_queue,
-                                       self._async_get_chunk,
-                                       response_queue=response_queue,
-                                       path=src, offset=offset, length=length,
-                                       out=out)
+                await swarm.put(self._async_get_chunk,
+                                response_queue=response_queue,
+                                path=src, offset=offset, length=length,
+                                out=out)
                 active_tasks += 1
                 offset = next_offset
 
             while active_tasks > 0:
                 res = await response_queue.get()
                 active_tasks -= 1
-                bytes_copied += self._unwrap_response(res)
+                bytes_copied += Swarm.unwrap_response(res)
                 if update_cb:
                     await update_cb(size, bytes_copied)
 
@@ -409,26 +361,16 @@ class DBFS():
 
     def get_to_file(self, src, out):
 
-        (swarm, queue, end) = self._new_swarm(self.workers, self.workers * 2)
 
         with progressbar.DataTransferBar() as bar:
             async def update_cb(size, read):
                 bar.max_value = size
                 bar.update(read)
 
-
-            result = None
-            async def control():
-                nonlocal result
-                try:
-                    result = await self._async_call_with_session(self._async_get_to_file,
-                                                                 queue, src, out, update_cb)
-                finally:
-                    await end()
-
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(asyncio.gather(control(), swarm))
-            return result
+            swarm = Swarm(self.workers, self.workers, name="get_to_file")
+            task =  self._async_call_with_session(self._async_get_to_file,
+                                                  swarm, src, out, update_cb)
+            return swarm.loop_until_complete(task)
 
     async def _async_find(self, session, path, update_cb):
         path = self._resolve(path)
@@ -438,17 +380,14 @@ class DBFS():
             await update_cb(root_fi, True, None)
             return
 
+        swarm = Swarm(self.workers, self.workers, use_priority_queue=True)
         response_queue = asyncio.Queue()
-        (swarm, queue, end) = self._new_swarm(workers = self.workers,
-                                              queue_max_size = self.workers,
-                                              use_priority_queue=True)
 
         async def control():
-            await self._queue_task(queue,
-                                   self._async_list,
-                                   task_key = path,
-                                   response_queue = response_queue,
-                                   path = path)
+            await swarm.put(self._async_list,
+                            task_key = path,
+                            response_queue = response_queue,
+                            path = path)
 
             pending = [[path, root_fi, None, None]] # path, fileinfo, ok, exception
 
@@ -478,18 +417,17 @@ class DBFS():
                     for fi in fis:
                         if fi.is_dir():
                             #print(f"< {fi.abspath()}")
-                            await self._queue_task(queue,
-                                                   self._async_list,
-                                                   task_key = fi.abspath(),
-                                                   response_queue = response_queue,
-                                                   path = fi.abspath())
+                            await swarm.put(self._async_list,
+                                            task_key = fi.abspath(),
+                                            response_queue = response_queue,
+                                            path = fi.abspath())
 
                 # finally report entries ready from the top
                 while pending and pending[0][2] is not None:
                     head = pending.pop(0)
                     await update_cb(head[1], head[2], head[3])
-            await end()
-        await asyncio.gather(control(), swarm)
+
+        await swarm.run_while(control())
 
     def find(self, path, update_cb):
         path = self._resolve(path)
@@ -509,8 +447,8 @@ class DBFS():
         # using it directly. high_queue is for parallelizing the
         # _self_get calls.
 
-        (high_swarm, high_queue, high_end) = self._new_swarm(self.workers, self.workers * 2)
-        (low_swarm, low_queue, low_end) = self._new_swarm(self.workers, self.workers * 2)
+        low_swarm = Swarm(self.workers, self.workers * 2)
+        high_swarm = Swarm(self.workers, self.workers * 2)
         response_queue = asyncio.Queue()
         active_gets = 0
 
@@ -531,8 +469,6 @@ class DBFS():
             # We empty the response_queue everytime this function is called.
             await empty_response_queue()
 
-            # print(f"entry found: {fi.abspath()}, ok: {ok}, ex: {ex}")
-
             remote_path = fi.abspath()
             relpath = fi.relpath(src)
             local_path = os.path.abspath(os.path.join(target, relpath))
@@ -546,29 +482,25 @@ class DBFS():
                         if update_cb:
                             await update_cb(relpath, False, ex)
             else:
-                await self._queue_task(high_queue,
-                                       self._async_get,
-                                       task_key=relpath,
-                                       response_queue=response_queue,
-                                       low_queue=low_queue, src=remote_path, target=local_path)
+                await high_swarm.put(self._async_get,
+                                     task_key=relpath,
+                                     response_queue=response_queue,
+                                     low_swarm=low_swarm, src=remote_path, target=local_path)
                 active_gets += 1
 
-        # So, here we go!
-        # First we run the find task...
-        await self._async_find(session, src, find_cb)
+        # This code is a bit hairy because we run the control code and
+        # both swarms concurrently:
+        async def control():
+            nonlocal active_gets
+            await high_swarm.run_while(self._async_find(session, src, find_cb))
 
-        # Then we finish the high level queue...
-        await high_end()
+            while active_gets > 0:
+                (relpath, res, ex) = await response_queue.get()
+                active_gets -= 1
+                ok = ex is None
+                await update_cb(relpath, ok, ex)
 
-        # Remove any pending notification from response_queue...
-        while active_gets > 0:
-            (relpath, res, ex) = await response_queue.get()
-            active_gets -= 1
-            ok = ex is None
-            await update_cb(relpath, ok, ex)
-
-        # And finally terminate the low queue...
-        await low_end()
+        await low_swarm.run_while(control())
 
 
     def rget(self, src, target, update_cb=None):
@@ -582,7 +514,7 @@ class DBFS():
         target = self._resolve(target)
         local_root_fi = FileInfo.from_local(src)
 
-        (swarm, queue, end) = self._new_swarm(self.workers, self.workers * 2)
+        swarm = Swarm(self.workers, self.workers * 2)
         response_queue = asyncio.Queue()
 
         async def control():
@@ -610,14 +542,12 @@ class DBFS():
                         local_child_path = os.path.join(local_path, fn)
                         remote_child_path = self._resolve(remote_path, fn)
                         #print(f"remote_child_path: {remote_child_path}")
-                        await self._queue_task(queue,
-                                               self._async_put,
-                                               task_key=local_child_path,
-                                               src=local_child_path,
-                                               target=remote_child_path,
-                                               response_queue=response_queue)
+                        await swarm.put(self._async_put,
+                                        task_key=local_child_path,
+                                        src=local_child_path,
+                                        target=remote_child_path,
+                                        response_queue=response_queue)
                         active_puts += 1
-
 
                 while True:
                     try:
@@ -636,8 +566,7 @@ class DBFS():
                     ok = ex is None
                     await update_cb(local_child_path, ok, ex)
 
-            await end()
-        await asyncio.gather(control(), swarm)
+        await swarm.run_while(control())
 
     def rput(self, src, target, update_cb=None):
         async def _async_update_cb(fi, ok, ex):

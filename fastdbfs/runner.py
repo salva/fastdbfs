@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 from fastdbfs.cli import CLI
 
 def run():

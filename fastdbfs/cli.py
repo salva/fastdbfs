@@ -9,6 +9,7 @@ import shlex
 import pathlib
 import subprocess
 import tempfile
+import logging
 
 from fastdbfs.dbfs import DBFS, Disconnected
 
@@ -44,7 +45,8 @@ class CLI(cmd.Cmd):
             "max_retries": 10,
             "pager": "less",
             "error_delay": 10,
-            "error_delay_increment": 10
+            "error_delay_increment": 10,
+            "log_level": "WARNING"
         }
 
         home = os.path.expanduser("~")
@@ -374,6 +376,8 @@ class CLI(cmd.Cmd):
         return stop
 
     def preloop(self):
+        logging.getLogger(None).setLevel(self.cfg("fastdbfs", "log_level"))
+
         if self.cfg("DEFAULT", "token", None) is not None:
             self.do_open("")
         self._set_prompt()
