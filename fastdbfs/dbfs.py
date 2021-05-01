@@ -124,7 +124,7 @@ class DBFS():
                     traceback.print_tb(trace)
                     raise ex
 
-    async def _async_http_get(self, session, end_point, **params):
+    def _async_http_get(self, session, end_point, **params):
         async def cb():
             url = urllib.parse.urljoin(self.host, end_point)
             headers = { "Authorization": "Bearer " + self.token }
@@ -133,9 +133,9 @@ class DBFS():
                                    params=params,
                                    headers=headers) as response:
                 return await self._unpack_response(response)
-        return await self._async_control(cb)
+        return self._async_control(cb)
 
-    async def _async_http_post(self, session, end_point, **data):
+    def _async_http_post(self, session, end_point, **data):
         async def cb():
             url = urllib.parse.urljoin(self.host, end_point)
             headers = { "Authorization": "Bearer " + self.token,
@@ -146,7 +146,7 @@ class DBFS():
                                     data=load) as response:
                 return await self._unpack_response(response)
 
-        return await self._async_control(cb)
+        return self._async_control(cb)
 
     async def _async_call_with_session(self, cb, *params, **kwparams):
         async with aiohttp.ClientSession() as session:
@@ -171,9 +171,9 @@ class DBFS():
     def get_status(self, path):
         return self._run_with_session(self._async_get_status, path)
 
-    async def _async_mkdir(self, session, path):
+    def _async_mkdir(self, session, path):
         path = self._resolve(path)
-        await self._async_http_post(session, "api/2.0/dbfs/mkdirs", path=path)
+        return self._async_http_post(session, "api/2.0/dbfs/mkdirs", path=path)
 
     def mkdir(self, path):
         return self._run_with_session(self._async_mkdir, path=path)
@@ -193,10 +193,10 @@ class DBFS():
         else:
             return [fi]
 
-    async def _async_rm(self, session, path, recursive=False):
+    def _async_rm(self, session, path, recursive=False):
         path = self._resolve(path)
-        await self._async_http_post(session, "api/2.0/dbfs/delete",
-                                    path=path, recursive=recursive)
+        return self._async_http_post(session, "api/2.0/dbfs/delete",
+                                     path=path, recursive=recursive)
 
     def rm(self, path, recursive=False):
         path = self._resolve(path)
@@ -221,16 +221,16 @@ class DBFS():
                                      path=path, overwrite=overwrite)
         return int(out["handle"])
 
-    async def _async_add_block(self, session, handle, block):
-        return await self._async_http_post(session,
-                                           "api/2.0/dbfs/add-block",
-                                           data=base64.standard_b64encode(block).decode('ascii'),
-                                           handle=handle)
+    def _async_add_block(self, session, handle, block):
+        return self._async_http_post(session,
+                                     "api/2.0/dbfs/add-block",
+                                     data=base64.standard_b64encode(block).decode('ascii'),
+                                     handle=handle)
 
-    async def _async_close(self, session, handle):
-        return await self._async_http_post(session,
-                                           "api/2.0/dbfs/close",
-                                           handle=handle)
+    def _async_close(self, session, handle):
+        return self._async_http_post(session,
+                                     "api/2.0/dbfs/close",
+                                     handle=handle)
 
     async def _async_put_from_file(self, session, infile, target, size=None, overwrite=False, update_cb=None):
         target = self._resolve(target)
@@ -360,8 +360,6 @@ class DBFS():
 
 
     def get_to_file(self, src, out):
-
-
         with progressbar.DataTransferBar() as bar:
             async def update_cb(size, read):
                 bar.max_value = size
