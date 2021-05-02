@@ -54,14 +54,6 @@ class CLI(cmd.Cmd):
         fns = [os.path.join(home, fn) for fn in (".databrickscfg", ".fastdbfs", ".config/fastdbfs")]
         self._cfg.read(fns)
 
-    def _tell_error(self, msg):
-        _, ex, trace = sys.exc_info()
-        print(f"{msg}: {ex}")
-        logging.debug("Stack trace", exc_info=True)
-        #        if self._debug:
-        #           print("Stack trace:")
-        #          traceback.print_tb(trace)
-
     def _do_open(self, profile):
         dbfs = DBFS(profile,
                     host = self.cfg(profile, "host"),
@@ -473,6 +465,11 @@ class CLI(cmd.Cmd):
     def postcmd(self, stop, line):
         self._set_prompt()
         return stop
+
+    def _tell_error(self, msg):
+        _, ex, _ = sys.exc_info()
+        print(f"{msg}: {ex}")
+        logging.debug("Stack trace", exc_info=True)
 
     def onecmd(self, line):
         try:

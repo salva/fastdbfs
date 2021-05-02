@@ -14,6 +14,7 @@ import logging
 
 from fastdbfs.fileinfo import FileInfo
 from fastdbfs.swarm import Swarm
+from fastdbfs.exceptions import RateError, APIError
 
 class Disconnected():
     def __init__(self):
@@ -118,10 +119,8 @@ class DBFS():
                     await asyncio.sleep(self.error_delay + self.error_delay_increment * retries)
                     retries += 1
 
-                except:
-                    _, ex, trace = sys.exc_info()
-                    print("Stack trace:")
-                    traceback.print_tb(trace)
+                except Exception as ex:
+                    logging.debug("Stack trace:", exc_info=True)
                     raise ex
 
     def _async_http_get(self, session, end_point, **params):
