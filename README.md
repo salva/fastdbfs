@@ -35,8 +35,6 @@ welcome.
 
 * `rget src [dest]`: copies the remote directory recursively.
 
-* `rmdir dir`: removes the remote directory recursively.
-
 * `rm file`: removes the remote file.
 
 * `mkdir dir`: creates the directory (and any non-existent parents).
