@@ -51,10 +51,10 @@ def _add_arg_decl(func, **kwargs):
     return wrapper
 
 def _option_lookup(option_decls, name):
-    for ix, option in enumerate(option_decls):
-        for name in option.names:
-            if key == name:
-                return (option, ix)
+    for decl in option_decls:
+        for decl_name in decl.names:
+            if decl_name == name:
+                return decl
     raise Exception(f"Invalid option {key}")
 
 def _parse_args(wrapper, cmdline):
@@ -91,9 +91,9 @@ def _parse_args(wrapper, cmdline):
                 name = current[1]
                 if len(current) > 2:
                     value = current[2:]
-
-            (decl, ix) = _option_lookup(option_decls, name)
+            decl = _option_lookup(option_decls, name)
             if decl.arity == "0":
+                kwargs[decl.key] = True
                 if value is not None:
                     if single_dash:
                         # we allow the user to pack several options
@@ -102,20 +102,19 @@ def _parse_args(wrapper, cmdline):
                         args.insert(0, "-" + value)
                     else:
                         raise Exception(f"Option {name} doesn't take a value")
-                    kwargs[decl.key] = True
-                else:
-                    if value is None:
-                        if not args:
-                            raise Exception(f"Option {name} requires a value")
-                            value = args.pop(0)
+            else:
+                if value is None:
+                    if not args:
+                        raise Exception(f"Option {name} requires a value")
+                    value = args.pop(0)
 
-                        if decl.arity in ("1", "?"):
-                            # we unwrap single values below.
-                            kwargs[decl.key] = [value]
-                        elif decl.arity in ("*", "+"):
-                            kwargs.setdefault(decl.key, []).append(value)
-                        else:
-                            raise Exception(f"Internal error: unexpected arity {decl.arity} for {decl.key}")
+                if decl.arity in ("1", "?"):
+                    # we unwrap single values below.
+                    kwargs[decl.key] = [value]
+                elif decl.arity in ("*", "+"):
+                    kwargs.setdefault(decl.key, []).append(value)
+                else:
+                    raise Exception(f"Internal error: unexpected arity {decl.arity} for {decl.key}")
 
         else: # so, it is not an option...
             for decl in list_decls:
@@ -186,7 +185,7 @@ def option(*names, arity="?", **kwargs):
 
 def flag(*names, default=False, **kwargs):
     def decorator(f):
-        return _add_arg_decl(f, names=names, option=True, arity="1", default=default, **kwargs)
+        return _add_arg_decl(f, names=names, option=True, arity="0", default=default, **kwargs)
     return decorator
 
 def arg(name, arity="1", **kwargs):
