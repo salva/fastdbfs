@@ -12,6 +12,7 @@ import tempfile
 import logging
 
 from fastdbfs.dbfs import DBFS, Disconnected
+from fastdbfs.cmdline import option, flag, arg, remote, local, argless
 
 class CLI(cmd.Cmd):
 
@@ -56,34 +57,51 @@ class CLI(cmd.Cmd):
     def _tell_error(self, msg):
         _, ex, trace = sys.exc_info()
         print(f"{msg}: {ex}")
-        if self._debug:
-            print("Stack trace:")
-            traceback.print_tb(trace)
+        logging.debug("Stack trace", exc_info=True)
+        #        if self._debug:
+        #           print("Stack trace:")
+        #          traceback.print_tb(trace)
 
-    def do_open(self, arg):
-        try:
-            id, = self._parse(arg, "DEFAULT")
-            dbfs = DBFS(id,
-                        host = self.cfg(id, "host"),
-                        cluster_id = self.cfg(id, "cluster_id"),
-                        token = self.cfg(id, "token"),
-                        chunk_size = self.cfg_int("fastdbfs", "chunk_size"),
-                        workers = self.cfg_int("fastdbfs", "workers"),
-                        max_retries = self.cfg_int("fastdbfs", "max_retries"))
+    def _do_open(self, profile):
+        dbfs = DBFS(profile,
+                    host = self.cfg(profile, "host"),
+                    cluster_id = self.cfg(profile, "cluster_id"),
+                    token = self.cfg(profile, "token"),
+                    chunk_size = self.cfg_int("fastdbfs", "chunk_size"),
+                    workers = self.cfg_int("fastdbfs", "workers"),
+                    max_retries = self.cfg_int("fastdbfs", "max_retries"))
 
-            dbfs.check()
-            self._dbfs = dbfs
-        except:
-            self._tell_error(f"Unable to open {arg}")
+        dbfs.check()
+        self._dbfs = dbfs
 
-    def do_cd(self, arg):
-        try:
-            path, = self._parse(arg, "/")
-            self._dbfs.cd(path)
-        except:
-            self._tell_error(f"{path}: unable to change dir")
+    @arg("profile", default="DEFAULT")
+    def do_open(self, profile):
+        """
+        open [profile]
+
+        Sets the active Databricks profile.
+        """
+
+        print(f"calling _do_open({profile}")
+        self._do_open(profile)
+
+    @remote("path")
+    def do_cd(self, path):
+        """
+        cd [path]
+
+        Change the remote current directory.
+        """
+
+        self._dbfs.cd(path)
 
     def do_mkcd(self, arg):
+        """
+        mkcd [path]
+
+        Creates the given directory and then sets it as the current directory.
+        """
+
         self.do_mkdir(arg)
         self.do_cd(arg)
 
@@ -99,88 +117,110 @@ class CLI(cmd.Cmd):
     def _format_time(self, mtime):
         return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mtime/1000))
 
-    def do_mkdir(self, arg):
-        try:
-            path, = self._parse(arg, min=1)
-            self._dbfs.mkdir(path)
-        except:
-            self._tell_error(f"{path}: mkdir failed")
+    @remote("path")
+    def do_mkdir(self, path):
+        """
+        mkdir path
 
-    def do_ls(self, arg):
-        try:
-            path, = self._parse(arg, ".")
-            # cols are type, size, mtime and path
-            type_len = 3
-            size_len = 1
-            mtime_len = 1
-            table = []
-            for e in self._dbfs.ls(path):
-                row = (e.type(),
-                       self._format_size(e.size()),
-                       self._format_time(e.mtime()),
-                       e.basename())
+        Creates the remote path.
+        """
 
-                # print(f"row: {row}")
-                type_len = max(type_len, len(row[0]))
-                size_len = max(size_len, len(row[1]))
-                mtime_len = max(mtime_len, len(row[2]))
-                table.append(row)
+        self._dbfs.mkdir(path)
 
-            fmt = "{:>"+str(type_len)+"} {:>"+str(size_len)+"} {:>"+str(mtime_len)+"} {}"
-            for e in table:
-                print(fmt.format(*e))
+    @flag("long", "l")
+    @remote("path", default=".")
+    def do_ls(self, path, long):
+        """
+        ls [path]
 
-        except:
-            self._tell_error(f"{arg}: unable to list directory")
+        List the contents of the remote directory.
+        """
 
-    def do_lcd(self, arg):
-        try:
-            path, = self._parse(arg, os.path.expanduser("~"))
-            os.chdir(path)
-        except:
-            self._tell_error(f"{arg}: unable to change dir")
+        # TODO: add support for long flag
+        # cols are type, size, mtime and path
+        type_len = 3
+        size_len = 1
+        mtime_len = 1
+        table = []
+        for e in self._dbfs.ls(path):
+            row = (e.type(),
+                   self._format_size(e.size()),
+                   self._format_time(e.mtime()),
+                   e.basename())
 
-    def do_lpwd(self, arg):
-        self._parse(arg)
-        try:
-            print(os.getcwd())
-        except:
-            self._tell_error("getcwd failed")
+            # print(f"row: {row}")
+            type_len = max(type_len, len(row[0]))
+            size_len = max(size_len, len(row[1]))
+            mtime_len = max(mtime_len, len(row[2]))
+            table.append(row)
+
+        fmt = "{:>"+str(type_len)+"} {:>"+str(size_len)+"} {:>"+str(mtime_len)+"} {}"
+        for e in table:
+            print(fmt.format(*e))
+
+    @local("path", default="~")
+    def do_lcd(self, path):
+        """
+        lcd [path]
+
+        Changes the local working directory.
+        """
+
+        os.chdir(path)
+
+
+    @argless()
+    def do_lpwd(self):
+        """
+        lpwd
+
+        Displays the local current directory.
+        """
+
+        print(os.getcwd())
 
     def _local_mkdir(self, path):
         pathlib.Path(path).mkdir(parents=True, exist_ok=True)
 
-    def do_put(self, arg):
+    @flag("overwrite")
+    @local("src")
+    @remote("target", arity="?")
+    def do_put(self, overwrite, src, target):
+        """
+        put [OPTS] src [target]
+
+        Copies the given local file to the remote system.
+
+        Supported options are:
+
+          -o, --overwrite  When a file already exists at the target
+                           location, it is overwritten.
+        """
+
+        # TODO: implement overwrite
         try:
-            src, target = self._parse(arg, ".", min=1)
-            try:
-                # We check whether the target exists and if it is a
-                # directory.  If it is a directory we compose the name
-                # using the src basename and check the target again.
-                for first in (True, False):
-                    fi = self._dbfs.get_status(target)
-                    if first and fi.is_dir():
-                        target = os.path.join(target, os.path.basename(src))
-                    else:
-                        break
-            except Exception as ex:
-                print(f"file not found at {target}: {ex}")
-                # No file there, ok!
-                pass
-            else:
-                raise Exception("File already exists")
+            # We check whether the target exists and if it is a
+            # directory.  If it is a directory we compose the name
+            # using the src basename and check the target again.
+            for first in (True, False):
+                fi = self._dbfs.get_status(target)
+                if first and fi.is_dir():
+                    target = os.path.join(target, os.path.basename(src))
+                else:
+                    break
+        except Exception as ex:
+            print(f"file not found at {target}: {ex}")
+            # No file there, ok!
+            pass
+        else:
+            raise Exception("File already exists")
 
-            print(f"copying to {target}")
+        print(f"copying to {target}")
 
-            size = os.stat(src).st_size
+        size = os.stat(src).st_size
 
-            with open(src, "rb") as infile:
-                start = time.time()
-                self._dbfs.put_from_file(infile, target, size=size)
-                delta = max(1, time.time() - start)
-
-        except:
-            self._tell_error(f"{arg}: put failed")
+        with open(src, "rb") as infile:
+            self._dbfs.put_from_file(infile, target, size=size)
 
     def _get_to_temp(self, src, prefix=".tmp-", suffix=None, **kwargs):
         try:
@@ -202,23 +242,31 @@ class CLI(cmd.Cmd):
             except: pass
             raise ex
 
-    def do_get(self, arg):
-        try:
-            src, target = self._parse(arg, ".", min=1)
+    @flag("overwrite")
+    @remote("src")
+    @local("target", arity="?")
+    def do_get(self, overwrite, src, target):
+        """
+        get [OPTS] src [target]
 
-            if os.path.isdir(target):
-                target = os.path.join(target, os.path.basename(src))
-            if os.path.exists(target):
-                raise Exception("file already exists")
+        Copies the given remote file to the local system.
 
-            parent_dir, _ = os.path.split(target)
-            self._local_mkdir(parent_dir)
+        Supported options are as follows:
 
-            tmp_target = self._get_to_temp(src, prefix=".transferring-", suffix="", dir=parent_dir)
-            os.rename(tmp_target, target)
+          -o, --overwrite  When a file already exists at the target
+                           location, it is overwritten.
+        """
 
-        except:
-            self._tell_error(f"{arg}: unable to retrieve remote file")
+        if os.path.isdir(target):
+            target = os.path.join(target, os.path.basename(src))
+        if os.path.exists(target):
+            raise Exception("Target file already exists")
+
+        parent_dir, _ = os.path.split(target)
+        self._local_mkdir(parent_dir)
+
+        tmp_target = self._get_to_temp(src, prefix=".transferring-", suffix="", dir=parent_dir)
+        os.rename(tmp_target, target)
 
     def _get_and_call(self, src, cb):
         target = self._get_to_temp(src)
@@ -228,40 +276,38 @@ class CLI(cmd.Cmd):
             try: os.remove(target)
             except: pass
 
-    def do_rm(self, arg):
-        try:
-            path, = self._parse(arg, min=1)
-            self._dbfs.rm(path)
-            print("File removed");
-        except:
-            self._tell_error(f"{arg}: unable to remove remote file")
+    @flag("recursive", "R")
+    @remote("path")
+    def do_rm(self, recursive, path):
+        """
+        rm [OPTS] path
 
-    def do_rmdir(self, arg):
-        try:
-            path, = self._parse(arg, min=1)
-            self._dbfs.rm(path, recursive=True)
-            print("Dir removed");
-        except:
-            self._tell_error(f"{arg}: unable to remove remote file")
+        Supported options are as follows:
 
-    def do_find(self, arg):
-        try:
-            path, = self._parse(arg, ".")
-            path = self._dbfs._resolve(path)
+          -R, --recursive Delete files and directories recursively.
+        """
+        self._dbfs.rm(path, recursive=recursive)
 
-            def update_cb(fi, ok, ex):
-                print("{:>4} {:>7} {:>19} {}".format(fi.type(),
-                                                     self._format_size(fi.size()),
-                                                     self._format_time(fi.mtime()),
-                                                     fi.relpath(path)))
-                if ex:
-                    print("# Unable to recurse into {fi.relpath(path)}, {ex}")
-                    raise ex
+    @remote("path")
+    def do_find(self, path):
+        """
+        find [path]
 
-            self._dbfs.find(path, update_cb)
+        List files recursively.
+        """
 
-        except:
-            self._tell_error(f"{arg}: unable to recursively list remote dir");
+        path = self._dbfs._resolve(path)
+
+        def update_cb(fi, ok, ex):
+            print("{:>4} {:>7} {:>19} {}".format(fi.type(),
+                                                 self._format_size(fi.size()),
+                                                 self._format_time(fi.mtime()),
+                                                 fi.relpath(path)))
+            if ex:
+                print("# Unable to recurse into {fi.relpath(path)}, {ex}")
+                raise ex
+
+        self._dbfs.find(path, update_cb)
 
     def _rgetput_update_cb(self, path, ok, ex):
         if ok:
@@ -271,97 +317,150 @@ class CLI(cmd.Cmd):
         else:
             print(f"{path} FAILED {ex}!")
 
+    @local("src")
+    @remote("target", arity="?")
     def do_rput(self, arg):
-        try:
-            src, target = self._parse(arg, None, min=1)
+        """
+        rput [src [target]]
+
+        Copies the given local directory to the remote system
+        recursively.
+        """
+        if target is None:
             normalized_src = os.path.normpath(src)
-            if target is None:
-                if normalized_src == "." or normalized_src == "/":
-                    target = "."
-                else:
-                    target = os.path.basename(normalized_src)
+            if normalized_src == "." or normalized_src == "/":
+                target = "."
+            else:
+                target = os.path.basename(normalized_src)
+        self._dbfs.rput(src, target, self._rgetput_update_cb)
 
-            self._dbfs.rput(src, target, self._rgetput_update_cb)
-        except:
-            self._tell_error(f"{arg}: rput failed")
-
+    @remote("src")
+    @local("target", arity="?")
     def do_rget(self, arg):
-        try:
-            src, target = self._parse(arg, None, min=1)
+        """
+        rget [src [target]]
+
+        Copies the given remote directory to the local system
+        recursively.
+        """
+
+        if target is None:
             normalized_src = os.path.normpath(src)
-            if target is None:
-                if normalized_src == "." or normalized_src == "/":
-                    target = "."
-                else:
-                    target = os.path.basename(normalized_src)
+            if normalized_src == "." or normalized_src == "/":
+                target = "."
+            else:
+                target = os.path.basename(normalized_src)
+        self._dbfs.rget(src, target, self._rgetput_update_cb)
 
-            self._dbfs.rget(src, target, self._rgetput_update_cb)
-        except:
-            self._tell_error(f"{arg}: rget failed")
+    @remote("path")
+    def do_cat(self, path):
+        """
+        cat path
 
-    def do_cat(self, arg):
-        try:
-            src, = self._parse(arg, min=1)
-            def cb(fn):
-                subprocess.run(["cat", "--", fn])
-            self._get_and_call(arg, cb)
-        except:
-            self._tell_error(f"{arg}: unable to show file")
+        Prints the contents of the remote file.
+        """
+        def cb(fn):
+            subprocess.run(["cat", "--", fn])
+        self._get_and_call(path, cb)
 
-    def do_more(self, arg, pager=None):
-        try:
-            src, = self._parse(arg, min=1)
-            if pager is None:
-                pager = self.cfg("fastdbfs", "pager")
-            def cb(fn):
-                subprocess.run([pager, "--", fn])
-            self._get_and_call(arg, cb)
-        except:
-            self._tell_error(f"{arg}: unable to show file")
+    def _do_show(self, path, pager=None):
+        if pager is None:
+            pager = self.cfg("fastdbfs", "pager")
+        def cb(fn):
+            subprocess.run([pager, "--", fn])
+        # print(f"pager: {pager}, cb: {cb}")
+        self._get_and_call(arg, cb)
 
-    def do_edit(self, arg, editor=None):
-        try:
-            src, = self._parse(arg, min=1)
-            if editor is None:
-                editor = self.cfg("fastdbfs", "editor", default=os.environ.get("EDITOR", "vi"))
+    @option("pager")
+    @remote("path")
+    def do_show(self, pager, path):
+        """
+        show path
 
-            def cb(tmp_fn):
-                # in order to avoid race conditions we force the mtime
-                # of the temporal file into the past
-                the_past = int(time.time() - 2)
-                os.utime(tmp_fn, times=(the_past, the_past))
-                subprocess.run([editor, "--", tmp_fn])
-                stat_after = os.stat(tmp_fn)
-                if (stat_after.st_mtime > the_past):
-                    with open(tmp_fn, "rb") as infile:
-                        self._dbfs.put_from_file(infile, src, size=stat_after.st_size, overwrite=True)
-                else:
-                    raise Exception(f"File was not modified!")
+        Display the contents of the remote file using your favorite
+        pager.
+        """
 
-            self._get_and_call(arg, cb)
-        except:
-            self._tell_error(f"{arg}: edit failed")
+        # print(f"pager: {pager}, path: {path}")
+        self._do_show(path, pager=pager)
 
+    @remote("path")
+    def do_more(self, path):
+        self._do_show(path, pager="more")
+
+    @remote("path")
+    def do_less(self, path):
+        self._do_show(path, pager="less")
+
+    @remote("path")
+    def do_batcat(self, path):
+        self._do_show(path, pager="batcat")
+
+    def _do_edit(self, path, editor):
+        if editor is None:
+            editor = self.cfg("fastdbfs", "editor", default=os.environ.get("EDITOR", "vi"))
+        def cb(tmp_fn):
+            # in order to avoid race conditions we force the mtime
+            # of the temporal file into the past
+            the_past = int(time.time() - 2)
+            os.utime(tmp_fn, times=(the_past, the_past))
+            subprocess.run([editor, "--", tmp_fn])
+            stat_after = os.stat(tmp_fn)
+            if (stat_after.st_mtime > the_past):
+                with open(tmp_fn, "rb") as infile:
+                    self._dbfs.put_from_file(infile, src, size=stat_after.st_size, overwrite=True)
+            else:
+                raise Exception(f"File was not modified!")
+
+        self._get_and_call(path, cb)
+
+    @option("editor")
+    @remote("path")
+    def do_edit(self, editor, path):
+        """
+        edit path
+
+        Retrieves the remote file and opens it using your favorite editor.
+
+        Once you closes the editor it copies the file back to the
+        remote system.
+        """
+        self._do_edit(path, editor)
+
+    @remote("path")
     def do_mg(self, arg):
-        self.do_edit(arg, editor="mg")
+        self._do_edit(path, editor="mg")
 
+    @remote("path")
     def do_vi(self, arg):
-        self.do_edit(arg, editor="vi")
-
-    def do_less(self, arg):
-        self.do_more(arg, pager="less")
-
-    def do_batcat(self, arg):
-        self.do_more(arg, pager="batcat")
+        self._do_edit(path, editor="vi")
 
     def do_shell(self, arg):
+        """
+        !cmd args...
+
+        Runs the given command locally.
+        """
         os.system(arg)
 
-    def do_EOF(self, arg):
+    @argless()
+    def do_EOF(self):
         print("\nBye!")
         return True
 
-    def do_exit(self, arg):
+    @argless()
+    def do_exit(self):
+        """
+        exit
+
+        Exits the program.
+        """
+
+        print("Bye!")
+        return True
+
+    @argless()
+    def do_q(self):
         print("Bye!")
         return True
 
@@ -375,11 +474,18 @@ class CLI(cmd.Cmd):
         self._set_prompt()
         return stop
 
+    def onecmd(self, line):
+        try:
+            return super().onecmd(line)
+        except Exception as ex:
+            self._tell_error("Operation failed")
+            return False
+
     def preloop(self):
         logging.getLogger(None).setLevel(self.cfg("fastdbfs", "log_level"))
 
         if self.cfg("DEFAULT", "token", None) is not None:
-            self.do_open("")
+            self._do_open("DEFAULT")
         self._set_prompt()
 
     def _parse(self, arg, *defaults, min=0, max=None):
