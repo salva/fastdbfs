@@ -43,7 +43,6 @@ class _ArgDecl:
     def __repr__(self):
         return self.__str__()
 
-
 def _add_arg_decl(func, **kwargs):
     wrapper = _wrap(func)
     arg_decl = _ArgDecl(**kwargs)
@@ -55,7 +54,7 @@ def _option_lookup(option_decls, name):
         for decl_name in decl.names:
             if decl_name == name:
                 return decl
-    raise Exception(f"Invalid option {key}")
+    raise Exception(f"Invalid option {name}")
 
 def _parse_args(wrapper, cmdline):
     option_decls = []
@@ -198,10 +197,15 @@ def remote(name, arity="1", **kwargs):
         return _add_arg_decl(f, name=name, arity=arity, **kwargs)
     return decorator
 
+def _expanduser(path):
+    if path is None:
+        return None
+    return os.path.expanduser(path)
+
 def local(name, arity="1", **kwargs):
     def decorator(f):
         return _add_arg_decl(f, name=name, arity=arity,
-                             preprocess=os.path.expanduser,
+                             preprocess=_expanduser,
                              **kwargs)
     return decorator
 

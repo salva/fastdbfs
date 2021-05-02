@@ -10,6 +10,7 @@ import pathlib
 import subprocess
 import tempfile
 import logging
+import progressbar
 
 from fastdbfs.dbfs import DBFS, Disconnected
 from fastdbfs.cmdline import option, flag, arg, remote, local, argless
@@ -108,12 +109,9 @@ class CLI(cmd.Cmd):
 
         self._dbfs.mkdir(path)
 
-    @flag("human", "h")
-    @flag("long", "l")
-    @remote("path", default=".")
-    def do_ls(self, path, long, human):
+    def _do_ls(self, path, long, human):
         """
-ls [OPTS] [path]
+        ls [OPTS] [path]
 
         List the contents of the remote directory.
 
@@ -133,6 +131,22 @@ ls [OPTS] [path]
             table.append(fi.type(), fi.size(), fi.mtime(), fi.basename())
         table.print()
 
+    @flag("long", "l")
+    @flag("human", "h")
+    @remote("path", default=".")
+    def do_ls(self, path, long, human):
+        return self._do_ls(path, long, human)
+
+    @flag("human", "h")
+    @remote("path", default=".")
+    def do_ll(self, path, human):
+        """
+        ll [OPTS] [path]
+
+        ll is an alias for "ls -l".
+        """
+        return self._do_ls(path, True, human)
+
     @local("path", default="~")
     def do_lcd(self, path):
         """
@@ -142,7 +156,6 @@ ls [OPTS] [path]
         """
 
         os.chdir(path)
-
 
     @argless()
     def do_lpwd(self):
@@ -157,7 +170,7 @@ ls [OPTS] [path]
     def _local_mkdir(self, path):
         pathlib.Path(path).mkdir(parents=True, exist_ok=True)
 
-    @flag("overwrite")
+    @flag("overwrite", "o")
     @local("src")
     @remote("target", arity="?")
     def do_put(self, overwrite, src, target):
@@ -172,32 +185,20 @@ ls [OPTS] [path]
                            location, it is overwritten.
         """
 
-        # TODO: implement overwrite
         try:
-            # We check whether the target exists and if it is a
-            # directory.  If it is a directory we compose the name
-            # using the src basename and check the target again.
-            for first in (True, False):
-                fi = self._dbfs.get_status(target)
-                if first and fi.is_dir():
-                    target = os.path.join(target, os.path.basename(src))
-                else:
-                    break
-        except Exception as ex:
-            print(f"file not found at {target}: {ex}")
-            # No file there, ok!
-            pass
-        else:
-            raise Exception("File already exists")
+            fi = self._dbfs.get_status(target)
+            if fi.is_dir():
+                target = os.path.join(target, os.path.basename(src))
+        except: pass
 
-        print(f"copying to {target}")
+        with progressbar.DataTransferBar() as bar:
+            def update_cb(size, bytes_copied):
+                bar.max_size=size
+                bar.update(bytes_copied)
 
-        size = os.stat(src).st_size
+            self._dbfs.put(src, target, overwrite=overwrite, update_cb=update_cb)
 
-        with open(src, "rb") as infile:
-            self._dbfs.put_from_file(infile, target, size=size)
-
-    def _get_to_temp(self, src, prefix=".tmp-", suffix=None, **kwargs):
+    def _get_to_temp(self, src,  update_cb=None, prefix=".tmp-", suffix=None, **kwargs):
         try:
             if suffix is None:
                 bn = os.path.basename(src)
@@ -206,7 +207,7 @@ ls [OPTS] [path]
 
             (f, target) = tempfile.mkstemp(prefix=prefix, suffix=suffix, **kwargs)
             out = os.fdopen(f, "wb")
-            self._dbfs.get_to_file(src, out)
+            self._dbfs.get_to_file(src, out, update_cb=update_cb)
             out.close()
             return target
 
@@ -217,9 +218,9 @@ ls [OPTS] [path]
             except: pass
             raise ex
 
-    @flag("overwrite")
+    @flag("overwrite", "o")
     @remote("src")
-    @local("target", arity="?")
+    @local("target", arity="?", default=".")
     def do_get(self, overwrite, src, target):
         """
         get [OPTS] src [target]
@@ -234,13 +235,19 @@ ls [OPTS] [path]
 
         if os.path.isdir(target):
             target = os.path.join(target, os.path.basename(src))
-        if os.path.exists(target):
+        if os.path.exists(target) and not overwrite:
             raise Exception("Target file already exists")
 
         parent_dir, _ = os.path.split(target)
         self._local_mkdir(parent_dir)
 
-        tmp_target = self._get_to_temp(src, prefix=".transferring-", suffix="", dir=parent_dir)
+        with progressbar.DataTransferBar() as bar:
+            def update_cb(size, bytes_copied):
+                bar.max_size=size
+                bar.update(bytes_copied)
+
+            tmp_target = self._get_to_temp(src, update_cb=update_cb,
+                                           prefix=".transferring-", suffix="", dir=parent_dir)
         os.rename(tmp_target, target)
 
     def _get_and_call(self, src, cb):
@@ -292,9 +299,10 @@ ls [OPTS] [path]
         else:
             print(f"{path} FAILED {ex}!")
 
+    @flag("overwrite", "o")
     @local("src")
     @remote("target", arity="?")
-    def do_rput(self, arg):
+    def do_rput(self, overwrite, src, target):
         """
         rput [src [target]]
 
@@ -307,11 +315,11 @@ ls [OPTS] [path]
                 target = "."
             else:
                 target = os.path.basename(normalized_src)
-        self._dbfs.rput(src, target, self._rgetput_update_cb)
+        self._dbfs.rput(src, target, self._rgetput_update_cb, overwrite=overwrite)
 
     @remote("src")
     @local("target", arity="?")
-    def do_rget(self, arg):
+    def do_rget(self, src, target):
         """
         rget [src [target]]
 
@@ -325,7 +333,12 @@ ls [OPTS] [path]
                 target = "."
             else:
                 target = os.path.basename(normalized_src)
-        self._dbfs.rget(src, target, self._rgetput_update_cb)
+
+        with progressbar.ProgressBar() as bar:
+            def update_cb(max_entries, done, **_):
+                bar.max_value = max_entries
+                bar.update(done)
+            self._dbfs.rget(src, target, update_cb)
 
     @remote("path")
     def do_cat(self, path):
@@ -451,7 +464,7 @@ ls [OPTS] [path]
 
     def _tell_error(self, msg):
         _, ex, _ = sys.exc_info()
-        print(f"{msg}: {ex}")
+        print(f"{msg}: {type(ex).__name__} - {ex}")
         logging.debug("Stack trace", exc_info=True)
 
     def onecmd(self, line):

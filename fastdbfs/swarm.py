@@ -79,7 +79,7 @@ class Swarm:
 
     async def put(self, task, task_key=None, response_queue=None, **kwargs):
         wrapper = (task_key, task, response_queue, kwargs)
-        logging.debug(f"Swarm {self.name} queueing wrapper {wrapper}")
+        logging.debug(f"Swarm {self.name} queueing task {task and task.__name__} with key {task_key}")
         return await self.queue.put(wrapper)
 
     @staticmethod
