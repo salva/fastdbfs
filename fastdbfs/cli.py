@@ -13,6 +13,7 @@ import logging
 
 from fastdbfs.dbfs import DBFS, Disconnected
 from fastdbfs.cmdline import option, flag, arg, remote, local, argless
+from fastdbfs.format import Table
 
 class CLI(cmd.Cmd):
 
@@ -97,18 +98,6 @@ class CLI(cmd.Cmd):
         self.do_mkdir(arg)
         self.do_cd(arg)
 
-    def _format_size(self, size):
-        if (size >= 1073741824):
-            return "%.1fG" % (size / 1073741824)
-        if (size > 1024 * 1024):
-            return "%.1fM" % (size / 1048576)
-        if (size > 1024):
-            return "%.1fK" % (size / 1024)
-        return str(int(size))
-
-    def _format_time(self, mtime):
-        return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mtime/1000))
-
     @remote("path")
     def do_mkdir(self, path):
         """
@@ -119,36 +108,30 @@ class CLI(cmd.Cmd):
 
         self._dbfs.mkdir(path)
 
+    @flag("human", "h")
     @flag("long", "l")
     @remote("path", default=".")
-    def do_ls(self, path, long):
+    def do_ls(self, path, long, human):
         """
-        ls [path]
+ls [OPTS] [path]
 
         List the contents of the remote directory.
+
+        The accepted options are as follows:
+
+          -l, --long   Print file properties.
+
+          -h, --human Print file sizes in a human friendly manner.
         """
 
-        # TODO: add support for long flag
-        # cols are type, size, mtime and path
-        type_len = 3
-        size_len = 1
-        mtime_len = 1
-        table = []
-        for e in self._dbfs.ls(path):
-            row = (e.type(),
-                   self._format_size(e.size()),
-                   self._format_time(e.mtime()),
-                   e.basename())
-
-            # print(f"row: {row}")
-            type_len = max(type_len, len(row[0]))
-            size_len = max(size_len, len(row[1]))
-            mtime_len = max(mtime_len, len(row[2]))
-            table.append(row)
-
-        fmt = "{:>"+str(type_len)+"} {:>"+str(size_len)+"} {:>"+str(mtime_len)+"} {}"
-        for e in table:
-            print(fmt.format(*e))
+        if long:
+            size_format = "human_size" if human else "size"
+            table = Table("right_text", size_format, "time", "text")
+        else:
+            table = Table(None, None, None, "text")
+        for fi in self._dbfs.ls(path):
+            table.append(fi.type(), fi.size(), fi.mtime(), fi.basename())
+        table.print()
 
     @local("path", default="~")
     def do_lcd(self, path):
