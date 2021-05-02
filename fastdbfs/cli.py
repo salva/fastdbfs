@@ -121,7 +121,7 @@ ls [OPTS] [path]
 
           -l, --long   Print file properties.
 
-          -h, --human Print file sizes in a human friendly manner.
+          -h, --human  Print file sizes in a human friendly manner.
         """
 
         if long:
