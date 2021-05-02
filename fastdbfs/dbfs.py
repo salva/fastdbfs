@@ -337,10 +337,10 @@ class DBFS():
                 if length <= 0:
                     break
 
-                await swarm.put(self._async_get_chunk,
-                                response_queue=response_queue,
-                                path=src, offset=offset, length=length,
-                                out=out)
+                await low_swarm.put(self._async_get_chunk,
+                                    response_queue=response_queue,
+                                    path=src, offset=offset, length=length,
+                                    out=out)
                 active_tasks += 1
                 offset = next_offset
 

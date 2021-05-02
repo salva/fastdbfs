@@ -46,12 +46,12 @@ class Swarm:
 
     def loop_until_complete(self, task):
         loop = asyncio.get_event_loop()
-        r = loop.run_until_complete(self._run_while(task))
+        r = loop.run_until_complete(self.run_while(task))
         logging.debug(f"Swarm {self.name} loop_until_complete done")
         return r
 
     async def terminate(self):
-        logging.debug("Swarm {self.name} terminating")
+        logging.debug(f"Swarm {self.name} terminating")
         for ix in range(self.max_workers):
             await self.put(None, task_key=ix)
 
@@ -83,7 +83,7 @@ class Swarm:
         return await self.queue.put(wrapper)
 
     @staticmethod
-    def unwrap_response(self, res):
+    def unwrap_response(res):
         (_, value, ex) = res
         if ex is not None:
             logging.debug(f"Rethrowing exception received from Swarm: {ex}")
