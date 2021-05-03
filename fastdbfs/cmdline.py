@@ -2,6 +2,8 @@ import shlex
 import re
 import os.path
 import logging
+import humanfriendly
+import dateparser
 
 def _wrap(func):
     if hasattr(func, "arg_decls"):
@@ -23,7 +25,7 @@ def _normalize_key(name):
     return re.sub(r'\W', '_', name)
 
 class _ArgDecl:
-    def __init__(self, option=False, arity="1", default=None, preprocess=None, **kwargs):
+    def __init__(self, option=False, arity="1", default=None, preprocess=None, cast=None, **kwargs):
         self.option=option
         if option:
             self.names=kwargs["names"]
@@ -34,6 +36,7 @@ class _ArgDecl:
         self.key=_normalize_key(self.name)
         self.arity=arity
         self.default=default
+        self.cast=cast
         self.preprocess=preprocess
         self.kwargs=kwargs
 
@@ -56,11 +59,35 @@ def _option_lookup(option_decls, name):
                 return decl
     raise Exception(f"Invalid option {name}")
 
+def _cast(arg, type):
+    # print(f"converting {arg} to {type}")
+    if type == "int":
+        return int(arg)
+    if type == "size":
+        return humanfriendly.parse_size(arg)
+    if type.startswith("date"):
+        settings = {"PREFER_DATES_FROM": "past"}
+        if type == "date>":
+            pass
+        elif type == "date<":
+            pass
+        elif type == "date":
+            pass
+        else:
+            raise Exception(f"Internal error: Invalid cast type {type}")
+        dt = dateparser.parse(arg, settings=settings)
+        # print(f"time limit for {type} {arg} is {dt} ({dt.timestamp()})")
+        return dt.timestamp()
+    if type == "date>":
+        dt
+    raise Exception(f"Internal error: Invalid cast type {type}")
+
 def _parse_args(wrapper, cmdline):
     option_decls = []
     list_decls = []
 
     for arg_decl in wrapper.arg_decls:
+        # print(arg_decl)
         if arg_decl.option:
             option_decls.append(arg_decl)
         else:
@@ -160,6 +187,8 @@ def _parse_args(wrapper, cmdline):
             arg = args[0] if args else decl.default
             if decl.arity == "1" and arg is None:
                 raise Exception(f"Missing mandatory argument {decl.name}")
+            if decl.cast and arg is not None:
+                arg = _cast(arg, decl.cast)
             if decl.preprocess:
                 arg = decl.preprocess(arg)
             kwargs[decl.key] = arg
@@ -215,3 +244,9 @@ def argless():
         return wrapper
     return decorator
 
+def chain(*decorators):
+    def decorator(f):
+        for d in decorators:
+            f = d(f)
+        return f
+    return decorator

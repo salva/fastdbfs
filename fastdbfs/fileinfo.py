@@ -33,7 +33,10 @@ class FileInfo():
     def abspath(self):
         return self._abspath
 
-    def relpath(self, base):
+    def relpath(self, base, requested=None):
+        if requested is not None and requested[0] == "/":
+            # the original request was absolute
+            return self._abspath
         base = os.path.normpath(base)
         path = self.abspath()
         if path == base:
@@ -57,3 +60,27 @@ class FileInfo():
     def type(self):
         return "dir" if self._is_dir else "file"
 
+    def _check_predicate__newer_than(self, limit):
+        return self.mtime() >= limit*1000
+
+    def _check_predicate__older_than(self, limit):
+        return self.mtime() <= limit*1000
+
+    def _check_predicate__max_size(self, limit):
+        if self.is_dir():
+            return True
+        return self.size() <= limit
+
+    def _check_predicate__min_size(self, limit):
+        if self.is_dir():
+            return True
+        return self.size >= limit
+
+    def check_predicates(self, **predicates):
+        #print(f"predicates: {predicates}")
+        for key, value in predicates.items():
+            if value is not None:
+                method = getattr(self, f"_check_predicate__{key}")
+                if not method(value):
+                    return False
+        return True

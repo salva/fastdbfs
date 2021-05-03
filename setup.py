@@ -20,6 +20,6 @@ setup(
     license='GPLv3',
     license_files = ('LICENSE.txt',),
     packages=['fastdbfs'],
-    install_requires=[ "progressbar2", "aiohttp" ],
+    install_requires=[ "progressbar2", "aiohttp", "humanfriendly", "dateparser" ],
     entry_points={'console_scripts': ['fastdbfs=fastdbfs.runner:run']}
 );

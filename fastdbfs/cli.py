@@ -13,8 +13,16 @@ import logging
 import progressbar
 
 from fastdbfs.dbfs import DBFS, Disconnected
-from fastdbfs.cmdline import option, flag, arg, remote, local, argless
-from fastdbfs.format import Table
+from fastdbfs.cmdline import option, flag, arg, remote, local, argless, chain
+from fastdbfs.format import Table, format_human_size, format_time
+import fastdbfs.util
+
+_find_predicates=chain(option("min-size", cast="size"),
+                       option("max-size", cast="size"),
+                       option("max-depth", cast="int"),
+                       option("min-depth", cast="int"),
+                       option("newer-than", "newer", cast="date>"),
+                       option("older-than", "older", cast="date<"))
 
 class CLI(cmd.Cmd):
 
@@ -167,9 +175,6 @@ class CLI(cmd.Cmd):
 
         print(os.getcwd())
 
-    def _local_mkdir(self, path):
-        pathlib.Path(path).mkdir(parents=True, exist_ok=True)
-
     @flag("overwrite", "o")
     @local("src")
     @remote("target", arity="?")
@@ -238,8 +243,8 @@ class CLI(cmd.Cmd):
         if os.path.exists(target) and not overwrite:
             raise Exception("Target file already exists")
 
-        parent_dir, _ = os.path.split(target)
-        self._local_mkdir(parent_dir)
+        parent_dir = os.path.dirname(target)
+        fastdbfs.util.mkpaths(parent_dir)
 
         with progressbar.DataTransferBar() as bar:
             def update_cb(size, bytes_copied):
@@ -270,28 +275,39 @@ class CLI(cmd.Cmd):
         """
         self._dbfs.rm(path, recursive=recursive)
 
+    @flag("quiet", "nowarn")
+    @flag("long", "ls", "l")
+    @flag("human", "h")
+    @_find_predicates
     @remote("path")
-    def do_find(self, path):
+    def do_find(self, path, quiet, long, human, **predicates):
         """
         find [path]
 
         List files recursively.
         """
 
-        path = self._dbfs._resolve(path)
+        with progressbar.ProgressBar(redirect_stdout=True, redirect_stderr=True) as bar:
+            def update_cb(entry, max_entries, done):
+                bar.max_value = max_entries
+                bar.update(done)
+                if entry.good:
+                    fi = entry.fi
+                    relpath = fi.relpath(self._dbfs.cwd, path)
+                    if long:
+                        size = fi.size()
+                        if human:
+                            size= format_human_size(size)
+                        mtime = format_time(fi.mtime())
+                        print("{:>4} {:>12} {:>19} {}".format(fi.type(), size, mtime, relpath))
+                    else:
+                        print(relpath)
+                if entry.ex and not quiet:
+                    print("# Unable to recurse into {relpath}, {entry.ex}", file=sys.stderr)
 
-        def update_cb(fi, ok, ex):
-            print("{:>4} {:>7} {:>19} {}".format(fi.type(),
-                                                 self._format_size(fi.size()),
-                                                 self._format_time(fi.mtime()),
-                                                 fi.relpath(path)))
-            if ex:
-                print("# Unable to recurse into {fi.relpath(path)}, {ex}")
-                raise ex
+            self._dbfs.find(path, update_cb, predicates)
 
-        self._dbfs.find(path, update_cb)
-
-    def _rgetput_update_cb(self, path, ok, ex):
+    def _rput_update_cb(self, path, ok, ex):
         if ok:
             print(f"{path} ok!")
         elif ex is None:
@@ -315,17 +331,22 @@ class CLI(cmd.Cmd):
                 target = "."
             else:
                 target = os.path.basename(normalized_src)
-        self._dbfs.rput(src, target, self._rgetput_update_cb, overwrite=overwrite)
+        self._dbfs.rput(src, target, self._rput_update_cb, overwrite=overwrite)
 
+    @flag("verbose", "v")
+    @flag("quiet", "q")
     @remote("src")
     @local("target", arity="?")
-    def do_rget(self, src, target):
+    def do_rget(self, verbose, quiet, src, target):
         """
         rget [src [target]]
 
         Copies the given remote directory to the local system
         recursively.
         """
+
+        if verbose and quiet:
+            raise Exception("verbose and quite can not be used together")
 
         if target is None:
             normalized_src = os.path.normpath(src)
@@ -334,8 +355,14 @@ class CLI(cmd.Cmd):
             else:
                 target = os.path.basename(normalized_src)
 
-        with progressbar.ProgressBar() as bar:
-            def update_cb(max_entries, done, **_):
+        with progressbar.ProgressBar(redirect_stderr=True) as bar:
+            def update_cb(entry, max_entries, done):
+                if not quiet:
+                    relpath = entry.fi.relpath(self._dbfs.cwd, src)
+                    if entry.ex:
+                        print(f"{relpath}: FAILED. {entry.ex}", file=sys.stderr)
+                    elif entry.good and verbose:
+                        print(f"{relpath}: copied.", file=sys.stderr)
                 bar.max_value = max_entries
                 bar.update(done)
             self._dbfs.rget(src, target, update_cb)
