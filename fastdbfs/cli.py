@@ -331,13 +331,14 @@ class CLI(cmd.Cmd):
                 target = "."
             else:
                 target = os.path.basename(normalized_src)
-        self._dbfs.rput(src, target, self._rput_update_cb, overwrite=overwrite)
+        self._dbfs.rput(src, target, overwrite=overwrite, update_cb=self._rput_update_cb)
 
     @flag("verbose", "v")
     @flag("quiet", "q")
     @remote("src")
     @local("target", arity="?")
-    def do_rget(self, verbose, quiet, src, target):
+    @_find_predicates
+    def do_rget(self, verbose, quiet, src, target, **predicates):
         """
         rget [src [target]]
 
@@ -365,7 +366,7 @@ class CLI(cmd.Cmd):
                         print(f"{relpath}: copied.", file=sys.stderr)
                 bar.max_value = max_entries
                 bar.update(done)
-            self._dbfs.rget(src, target, update_cb)
+            self._dbfs.rget(src, target, update_cb, predicates=predicates)
 
     @remote("path")
     def do_cat(self, path):
