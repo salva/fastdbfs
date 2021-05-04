@@ -107,7 +107,7 @@ def _parse_args(wrapper, cmdline):
             if current.startswith("--"):
                 single_dash = False
                 try:
-                    offset=current[3].index("=")
+                    offset=current[3:].index("=")+3
                     name=current[2:offset]
                     value=current[(offset+1):]
                 except:
