@@ -2,6 +2,7 @@ import stat
 
 import os
 import os.path
+import posixpath
 
 class FileInfo():
 
@@ -28,7 +29,7 @@ class FileInfo():
         self._abspath = abspath
 
     def basename(self):
-        return os.path.basename(self._abspath)
+        return posixpath.basename(self._abspath)
 
     def abspath(self):
         return self._abspath
@@ -37,7 +38,7 @@ class FileInfo():
         if requested is not None and requested[0] == "/":
             # the original request was absolute
             return self._abspath
-        base = os.path.normpath(base)
+        base = posixpath.normpath(base)
         path = self.abspath()
         if path == base:
             return "."

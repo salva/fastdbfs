@@ -3,6 +3,7 @@ import cmd
 import configparser
 import os
 import os.path
+import posixpath
 import traceback
 import time
 import shlex
@@ -60,8 +61,7 @@ class CLI(cmd.Cmd):
             "log_level": "WARNING"
         }
 
-        home = os.path.expanduser("~")
-        fns = [os.path.join(home, fn) for fn in (".databrickscfg", ".fastdbfs", ".config/fastdbfs")]
+        fns = [os.path.expanduser(fn) for fn in ("~/.databrickscfg", "~/.fastdbfs", "~/.config/fastdbfs")]
         self._cfg.read(fns)
 
     def _do_open(self, profile):
@@ -206,7 +206,7 @@ class CLI(cmd.Cmd):
     def _get_to_temp(self, src,  update_cb=None, prefix=".tmp-", suffix=None, **kwargs):
         try:
             if suffix is None:
-                bn = os.path.basename(src)
+                bn = posixpath.basename(src)
                 try: suffix = bn[bn.rindex("."):]
                 except: suffix = ""
 
@@ -327,6 +327,7 @@ class CLI(cmd.Cmd):
         """
         if target is None:
             normalized_src = os.path.normpath(src)
+            # FIXME: this normalization is not gona work for Windows
             if normalized_src == "." or normalized_src == "/":
                 target = "."
             else:
@@ -350,6 +351,7 @@ class CLI(cmd.Cmd):
             raise Exception("verbose and quite can not be used together")
 
         if target is None:
+            # FIXME: Windows again
             normalized_src = os.path.normpath(src)
             if normalized_src == "." or normalized_src == "/":
                 target = "."

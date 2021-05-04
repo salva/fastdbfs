@@ -3,6 +3,7 @@ import asyncio
 import aiohttp
 import os
 import os.path
+import posixpath
 import urllib.parse
 import time
 import base64
@@ -65,7 +66,7 @@ class DBFS():
         self._assert_dir(".")
 
     def _resolve(self, path, *more):
-        return os.path.normpath(os.path.join(self.cwd, path, *more))
+        return posixpath.normpath(posixpath.join(self.cwd, path, *more))
 
     def prompt(self):
         if self.id == "DEFAULT":
@@ -233,7 +234,7 @@ class DBFS():
             if (self.cwd == path or
                 (self.cwd.startswith(path) and self.cwd[len(path)] == "/")):
                 # Yes, fix it!
-                self.cwd = os.path.split(path)[0]
+                self.cwd = posixpath.split(path)[0]
 
     def _assert_dir(self, path):
         if not self.get_status(path).is_dir():
