@@ -23,7 +23,8 @@ _find_predicates=chain(option("min-size", cast="size"),
                        option("max-depth", cast="int"),
                        option("min-depth", cast="int"),
                        option("newer-than", "newer", cast="date>"),
-                       option("older-than", "older", cast="date<"))
+                       option("older-than", "older", cast="date<"),
+                       option("external-filter", "ext-filter"))
 
 class CLI(cmd.Cmd):
 
@@ -84,7 +85,6 @@ class CLI(cmd.Cmd):
         Sets the active Databricks profile.
         """
 
-        print(f"calling _do_open({profile}")
         self._do_open(profile)
 
     @remote("path")
@@ -275,12 +275,21 @@ class CLI(cmd.Cmd):
         """
         self._dbfs.rm(path, recursive=recursive)
 
+    def _wrap_external_filter(self, cmd):
+        if cmd is None:
+            return None
+
+        def filter(fis):
+            data = { relpath: fi.to_data() for relpath, fi in fis.items() }
+            return fastdbfs.util.call_external_processor_json(cmd, data)
+        return filter
+
     @flag("quiet", "nowarn")
     @flag("long", "ls", "l")
     @flag("human", "h")
     @_find_predicates
-    @remote("path")
-    def do_find(self, path, quiet, long, human, **predicates):
+    @remote("path", default=".")
+    def do_find(self, path, quiet, long, human, external_filter, **predicates):
         """
         find [path]
 
@@ -305,7 +314,9 @@ class CLI(cmd.Cmd):
                 if entry.ex and not quiet:
                     print("# Unable to recurse into {relpath}, {entry.ex}", file=sys.stderr)
 
-            self._dbfs.find(path, update_cb, predicates)
+            self._dbfs.find(path, update_cb,
+                            filter_cb = self._wrap_external_filter(external_filter),
+                            predicates = predicates)
 
     def _rput_update_cb(self, path, ok, ex):
         if ok:
@@ -339,7 +350,7 @@ class CLI(cmd.Cmd):
     @remote("src")
     @local("target", arity="?")
     @_find_predicates
-    def do_rget(self, verbose, quiet, src, target, **predicates):
+    def do_rget(self, verbose, quiet, src, target, external_filter, **predicates):
         """
         rget [src [target]]
 
@@ -368,7 +379,10 @@ class CLI(cmd.Cmd):
                         print(f"{relpath}: copied.", file=sys.stderr)
                 bar.max_value = max_entries
                 bar.update(done)
-            self._dbfs.rget(src, target, update_cb, predicates=predicates)
+            self._dbfs.rget(src, target,
+                            update_cb,
+                            filter_cb = self._wrap_external_filter(external_filter),
+                            predicates = predicates)
 
     @remote("path")
     def do_cat(self, path):
@@ -505,9 +519,20 @@ class CLI(cmd.Cmd):
             return False
 
     def preloop(self):
-        logging.getLogger(None).setLevel(self.cfg("fastdbfs", "log_level"))
+        # DEFAULTS contaminates everything, so we have to explicitly
+        # estate the fields that we want passed to
+        # logging.basicConfig().
+        section = self._cfg["logging"]
+        logcfg = { k: section[k]
+                   for k in ("filename", "filemode", "format", "datefmt",
+                             "style", "level", "encoding", "errors")
+                   if k in section }
 
-        if self.cfg("DEFAULT", "token", None) is not None:
+        print(f"logcfg: {logcfg}")
+
+        logging.basicConfig(force=1, **logcfg)
+
+        if "token" in self._cfg["DEFAULT"]:
             self._do_open("DEFAULT")
         self._set_prompt()
 

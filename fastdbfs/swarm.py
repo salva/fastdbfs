@@ -83,16 +83,17 @@ class Swarm:
                     logging.debug(f"Swarm {self.name}/{ix} terminating")
                     return
                 try:
-                    logging.debug(f"Swarm {self.name}/{ix} running task {task_key}")
+                    logging.debug(f"Swarm {self.name}/{ix} starting task {task_key}")
                     value = await cb(session, **kwargs)
                     res = (task_key, value, None)
                 except Exception as ex:
                     logging.debug(f"Swarm {self.name}/{ix} running task {task_key} failed with exception {ex}")
                     res = (task_key, None, ex)
 
+                logging.debug(f"Swarm {self.name}/{ix} ended task {task_key}")
                 if response_queue:
-                    logging.debug(f"Swarm {self.name}/{ix} running task {task_key} queues response")
                     await response_queue.put(res)
+                    logging.debug(f"Swarm {self.name}/{ix} queued response for task {task_key}")
 
     async def put(self, task, task_key=None, response_queue=None, **kwargs):
         if task_key is None:

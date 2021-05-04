@@ -53,6 +53,11 @@ welcome.
 
 * `exit`: exits the client.
 
+## External filters
+
+*TODO*
+
+
 # Configuration
 
 `fastdbfs` reads its configuration from `~/.config/fastdbfs` and

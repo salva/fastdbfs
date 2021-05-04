@@ -28,6 +28,12 @@ class FileInfo():
         self._mtime = mtime
         self._abspath = abspath
 
+    def to_data(self):
+        return { "abspath": self._abspath,
+                 "size":    self._size,
+                 "mtime":   self._mtime,
+                 "is_dir":  self._is_dir }
+
     def basename(self):
         return posixpath.basename(self._abspath)
 

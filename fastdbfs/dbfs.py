@@ -86,10 +86,12 @@ class DBFS():
             return cb(*args, **kwargs)
         return async_cb
 
-    def _make_swarm(self, name=None, **kwargs):
+    def _make_swarm(self, name=None, queue_max_size=None, **kwargs):
         if name is None:
             name = inspect.stack()[1].function
-        return Swarm(self.workers, self.workers, name=name, **kwargs)
+        if queue_max_size is None:
+            queue_max_size=self.workers
+        return Swarm(self.workers, queue_max_size=queue_max_size, name=name, **kwargs)
 
     async def _unpack_http_response(self, response):
         status = response.status
@@ -394,17 +396,35 @@ class DBFS():
                                               self._asynchronize(update_cb))
         return swarm.loop_until_complete(task)
 
-    async def _async_find(self, session, path, update_cb, predicates={}):
+    async def _async_find(self, session, path, update_cb, filter_cb=None, predicates={}):
         path = self._resolve(path)
+
+        async def filter(entries):
+            if filter_cb:
+                entries_by_relpath = { e.fi.relpath(path): e for e in entries }
+                input = { k: v.fi for k, v in entries_by_relpath.items() }
+                selected_paths = await filter_cb(input)
+                for p in selected_paths:
+                    try:
+                        del entries_by_relpath[p]
+                    except KeyError:
+                        logging.warning(f"Ignoring unexpected path {p} returned by filter")
+                for e in entries_by_relpath.values():
+                    e.good = False
+            for e in entries:
+                if not e.fi.check_predicates(**predicates):
+                    e.good = False
+
         root_fi = await self._async_get_status(session, path)
-        root_entry = FindEntry(root_fi, good=root_fi.check_predicates(**predicates))
+        root_entry = FindEntry(root_fi)
+        await filter([root_entry])
 
         if not root_fi.is_dir():
-            await update_cb(entry=root_entry, entries=1, done=1)
+            await update_cb(entry=root_entry, entries_found=1, done=1)
             return
 
-        swarm = self._make_swarm(use_priority_queue=True)
-        response_queue = asyncio.Queue()
+        swarm = self._make_swarm(use_priority_queue=True, queue_max_size=0)
+        response_queue = asyncio.PriorityQueue()
 
         async def control():
             await swarm.put(self._async_list,
@@ -412,11 +432,11 @@ class DBFS():
                             response_queue = response_queue,
                             path = path)
             pending = [root_entry]
-            entries = 1
+            entries_found = 1
             while pending:
-                logging.debug(f"_async_find control() loop, there are {len(pending)} currently pending entries")
-                sys.stdout.flush()
+                logging.debug(f"_async_find control() loop, first pending entry is {pending[0].fi.abspath()} of a total of {len(pending)}")
                 (key, fis, ex) = await response_queue.get()
+                logging.debug(f"_async_find control() loop, got response for {key}");
                 for e in pending:
                     if e.fi.abspath() == key:
                         e.ex = ex
@@ -426,11 +446,11 @@ class DBFS():
                     raise Exception("Internal error, key not found in pending")
 
                 if fis:
-                    entries += len(fis)
-                    pending += [FindEntry(fi,
-                                          good=fi.check_predicates(**predicates),
-                                          done=not fi.is_dir())
-                                for fi in fis]
+                    entries_found += len(fis)
+                    new = [FindEntry(fi, done=not fi.is_dir())
+                           for fi in fis]
+                    await filter(new)
+                    pending += new
                     pending.sort(key=lambda x: x.fi.abspath())
 
                     for fi in fis:
@@ -443,18 +463,20 @@ class DBFS():
                 # finally report entries ready from the top
                 while pending and pending[0].done:
                     e = pending.pop(0)
-                    await update_cb(entry=e, max_entries=entries, done=entries-len(pending))
+                    logging.debug(f"_async_back control() passing up {e.fi.abspath}, good: {e.good}")
+                    await update_cb(entry=e, max_entries=entries_found, done=entries_found-len(pending))
             logging.debug("_async_find control() done")
 
         await swarm.run_while(control())
 
-    def find(self, path, update_cb, predicates={}):
+    def find(self, path, update_cb, filter_cb=None, predicates={}):
         self._run_with_session(self._async_find,
                                self._resolve(path),
                                self._asynchronize(update_cb),
+                               self._asynchronize(filter_cb),
                                predicates=predicates)
 
-    async def _async_rget(self, session, src, target, update_cb=None, predicates={}):
+    async def _async_rget(self, session, src, target, update_cb=None, filter_cb=None, predicates={}):
         src = self._resolve(src)
 
         # We use two worker queues here, low is for the low level
@@ -518,7 +540,9 @@ class DBFS():
         # This code is a bit hairy because we run the control code and
         # both swarms concurrently:
         async def control():
-            await high_swarm.run_while(self._async_find(session, src, find_cb,
+            await high_swarm.run_while(self._async_find(session, src,
+                                                        find_cb=find_cb,
+                                                        filter_cb=filter_cb,
                                                         predicates=predicates))
 
             while active_gets:
@@ -528,9 +552,10 @@ class DBFS():
 
         await low_swarm.run_while(control())
 
-    def rget(self, src, target, update_cb=None, predicates={}):
+    def rget(self, src, target, update_cb=None, filter_cb=None, predicates={}):
         self._run_with_session(self._async_rget,
                                src, target,
+                               filter_cb=self._asynchronize(filter_cb),
                                update_cb=self._asynchronize(update_cb),
                                predicates=predicates)
 
