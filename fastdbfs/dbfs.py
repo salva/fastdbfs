@@ -527,10 +527,11 @@ class DBFS():
 
         await low_swarm.run_while(control())
 
-    def rget(self, src, target, update_cb=None):
+    def rget(self, src, target, update_cb=None, predicates={}):
         self._run_with_session(self._async_rget,
                                src, target,
-                               self._asynchronize(update_cb))
+                               update_cb=self._asynchronize(update_cb),
+                               predicates=predicates)
 
     async def _async_rput(self, session, src, target, overwrite=False, update_cb=None):
         target = self._resolve(target)

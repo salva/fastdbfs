@@ -74,7 +74,7 @@ class FileInfo():
     def _check_predicate__min_size(self, limit):
         if self.is_dir():
             return True
-        return self.size >= limit
+        return self.size() >= limit
 
     def check_predicates(self, **predicates):
         #print(f"predicates: {predicates}")
