@@ -1,9 +1,11 @@
 import shlex
 import re
 import os.path
+import posixpath
 import logging
 import humanfriendly
 import dateparser
+import fnmatch
 
 def _wrap(func):
     if hasattr(func, "arg_decls"):
@@ -25,7 +27,8 @@ def _normalize_key(name):
     return re.sub(r'\W', '_', name)
 
 class _ArgDecl:
-    def __init__(self, option=False, arity="1", default=None, preprocess=None, cast=None, **kwargs):
+    def __init__(self, option=False, arity="1", default=None, preprocess=None,
+                 cast=None, cast_args={}, **kwargs):
         self.option=option
         if option:
             self.names=kwargs["names"]
@@ -37,6 +40,7 @@ class _ArgDecl:
         self.arity=arity
         self.default=default
         self.cast=cast
+        self.cast_args=cast_args
         self.preprocess=preprocess
         self.kwargs=kwargs
 
@@ -59,12 +63,22 @@ def _option_lookup(option_decls, name):
                 return decl
     raise Exception(f"Invalid option {name}")
 
-def _cast(arg, type):
+def _compile_regex(str, case_insensitive):
+    logging.debug(f"compiling pattern {str}, case_insensitive: {case_insensitive}")
+    return re.compile(str, 0 if case_insensitive else re.I)
+
+def _cast(arg, type, extra):
     # print(f"converting {arg} to {type}")
     if type == "int":
         return int(arg)
     if type == "size":
         return humanfriendly.parse_size(arg)
+    if type == "glob":
+        ci = extra.get("case_insensitive", False)
+        return _compile_regex(fnmatch.translate(arg), ci)
+    if type == "re":
+        ci = extra.get("case_insensitive", False)
+        return _compile_regex(arg, ci)
     if type.startswith("date"):
         settings = {"PREFER_DATES_FROM": "past"}
         if type == "date>":
@@ -188,7 +202,7 @@ def _parse_args(wrapper, cmdline):
             if decl.arity == "1" and arg is None:
                 raise Exception(f"Missing mandatory argument {decl.name}")
             if decl.cast and arg is not None:
-                arg = _cast(arg, decl.cast)
+                arg = _cast(arg, decl.cast, decl.cast_args)
             if decl.preprocess:
                 arg = decl.preprocess(arg)
             kwargs[decl.key] = arg

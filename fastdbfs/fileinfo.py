@@ -3,6 +3,7 @@ import stat
 import os
 import os.path
 import posixpath
+import logging
 
 class FileInfo():
 
@@ -67,27 +68,53 @@ class FileInfo():
     def type(self):
         return "dir" if self._is_dir else "file"
 
-    def _check_predicate__newer_than(self, limit):
+    def _check_predicate__newer_than(self, limit, _):
         return self.mtime() >= limit*1000
 
-    def _check_predicate__older_than(self, limit):
+    def _check_predicate__older_than(self, limit, _):
         return self.mtime() <= limit*1000
 
-    def _check_predicate__max_size(self, limit):
+    def _check_predicate__max_size(self, limit, _):
         if self.is_dir():
             return True
         return self.size() <= limit
 
-    def _check_predicate__min_size(self, limit):
+    def _check_predicate__min_size(self, limit, _):
         if self.is_dir():
             return True
         return self.size() >= limit
 
-    def check_predicates(self, **predicates):
+    # FIXME: all those methods doing exactly the same are ugly
+    def _check_predicate__name(self, pattern, _):
+        return pattern.fullmatch(self.basename(), _)
+
+    def _check_predicate__iname(self, pattern):
+        return pattern.fullmatch(self.basename(), _)
+
+    def _check_predicate__re(self, pattern):
+        return pattern.search(self.basename(), _)
+
+    def _check_predicate__ire(self, pattern, _):
+        return pattern.search(self.basename())
+
+    def _check_predicate__iwholere(self, pattern, relpath):
+        return pattern.search(self.basename if relpath is None else relpath)
+
+    def _check_predicate__wholere(self, pattern, relpath):
+        return pattern.search(self.basename if relpath is None else relpath)
+
+    def check_predicates(self, relpath=None, **predicates):
         #print(f"predicates: {predicates}")
         for key, value in predicates.items():
             if value is not None:
-                method = getattr(self, f"_check_predicate__{key}")
-                if not method(value):
-                    return False
+                if key.startswith("exclude_"):
+                    method = getattr(self, f"_check_predicate__{key[len('exclude_'):]}")
+                    if method(value, relpath):
+                        logging.debug(f"entry {self.abspath()} has been discarded by predicate {key} with value {value}")
+                        return False
+                else:
+                    method = getattr(self, f"_check_predicate__{key}")
+                    if not method(value, relpath):
+                        logging.debug(f"entry {self.abspath()} has been discarded by predicate {key} with value {value}")
+                        return False
         return True

@@ -113,6 +113,7 @@ class DBFS():
             # connection errors and alike should be retried
             raise ex
         except Exception as ex:
+            logging.debug("Unable to retrieve API response {ex}", exc_info=True)
             raise Exception("Unable to retrieve API response") from ex
 
         if status == 200:
@@ -400,8 +401,11 @@ class DBFS():
         path = self._resolve(path)
 
         async def filter(entries):
+            entries_by_relpath = { e.fi.relpath(path): e for e in entries }
+            for relpath, e in entries_by_relpath.items():
+                if not e.fi.check_predicates(relpath=relpath, **predicates):
+                    e.good = False
             if filter_cb:
-                entries_by_relpath = { e.fi.relpath(path): e for e in entries }
                 input = { k: v.fi for k, v in entries_by_relpath.items() }
                 selected_paths = await filter_cb(input)
                 for p in selected_paths:
@@ -410,9 +414,6 @@ class DBFS():
                     except KeyError:
                         logging.warning(f"Ignoring unexpected path {p} returned by filter")
                 for e in entries_by_relpath.values():
-                    e.good = False
-            for e in entries:
-                if not e.fi.check_predicates(**predicates):
                     e.good = False
 
         root_fi = await self._async_get_status(session, path)
@@ -498,6 +499,7 @@ class DBFS():
         async def update_after_get(relpath, ex):
             entry = active_gets.pop(relpath)
             entry.ex = ex
+            logging.debug("Exception caught during file get")
             await update(entry)
 
         async def empty_response_queue():
@@ -520,28 +522,36 @@ class DBFS():
             entries = max_entries
             if fi.is_dir():
                 if entry.good: # mkdir
+                    logging.debug(f"making dir for {relpath}")
                     try:
                         fastdbfs.util.mkdirs(local_path)
                     except Exception as ex:
                         if not os.path.isdir(local_path):
                             logging.warn(f"{relpath}: mkdirs failed. {ex}")
                             entry.ex = ex
+                else:
+                    logging.debug(f"discarding dir {relpath}")
             else:
                 if entry.good:
+                    logging.debug(f"queueing download of {relpath}")
                     await high_swarm.put(self._async_get,
                                          task_key=relpath,
                                          response_queue=response_queue,
                                          low_swarm=low_swarm,
-                                         src=fi.abspath(), target=local_path)
+                                         src=fi.abspath(), target=local_path,
+                                         mkdirs=True)
                     active_gets[relpath] = entry
                     return # don't report the entry yet!
+                else:
+                    logging.debug(f"discarding file {relpath}")
+
             await update(entry)
 
         # This code is a bit hairy because we run the control code and
         # both swarms concurrently:
         async def control():
             await high_swarm.run_while(self._async_find(session, src,
-                                                        find_cb=find_cb,
+                                                        update_cb=find_cb,
                                                         filter_cb=filter_cb,
                                                         predicates=predicates))
 
