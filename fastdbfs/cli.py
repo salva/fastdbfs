@@ -598,7 +598,7 @@ class CLI(cmd.Cmd):
         # DEFAULTS contaminates everything, so we have to explicitly
         # estate the fields that we want passed to
         # logging.basicConfig().
-        section = self._cfg["logging"]
+        section = self._cfg.get("logging", {})
         logcfg = { k: section[k]
                    for k in ("filename", "filemode", "format", "datefmt",
                              "style", "level", "encoding", "errors")
