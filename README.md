@@ -10,7 +10,39 @@ lost at times.
 Comments, bug reports, ideas and patches or pull requests are very
 welcome.
 
-# Commands
+# Installation
+
+As development of `fastdbfs` progresses, from time to time and at
+points where it is considered to be more or less stable, releases on
+PyPi are done.
+
+Those versions can be installed as follows:
+
+    pip install fastdbfs
+
+But at this early development stage, getting `fastdbfs` directly from
+GitHub is still probably a better idea, even if it may be broken at
+times, you will enjoy newer features.
+
+You can do it as follows:
+
+    git clone https://github.com/salva/fastdbfs.git
+    cd fastdbfs
+    python setup.py install --user
+
+
+# Usage
+
+Once the program is installed, just invoke it from the command line as
+`fastdbfs`.
+
+I don't recomend at this point the usage of the python modules
+directly as the interfaces are not stable yet.
+
+## Commands
+
+Once `fastdbfs` is launched, a prompt appears and the following
+commands can be used:
 
 * `open [profile]`: sets the Databricks profile used for
   communicating. By default it uses `DEFAULT`.
@@ -67,7 +99,9 @@ See the sample files accompaning the program.
 
 # Limitations
 
-* Only Linux/UNIX is currently supported. Patches welcome!!!
+* Development is primarily done on Linux and only from time to time is
+  `fastdbfs` tested on Windows. Don't hesitate to report bugs related
+  to this.
 
 * The DBFS API has some limitations that `fastdbfs` can not overcome:
 
@@ -79,6 +113,14 @@ See the sample files accompaning the program.
     - The methods provided for uploading data are too simplistic. They can
       not be parallelized and in some edge cases transfers may become
       corrupted (`fastdbfs` tries to protect against that).
+
+    - The metadata available is limited to file size and modification
+      time.
+
+
+* Glob expression checking is done using python `fnmatch` module that
+  only supports a very small subset of patterns. Specifically, it
+  lacks support for alternations as in `*.{jpeg,jpg,png}`.
 
 # TODO
 
@@ -98,9 +140,7 @@ See the sample files accompaning the program.
 
 * Better usability.
 
-* Convert it into a Python module.
-
-* Break the code in several modules and clean it.
+* Improve code quality.
 
 # Development and support
 
