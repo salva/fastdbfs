@@ -8,6 +8,9 @@
 # pager=less
 # editor=vi
 
+[logging]
+# filename=/tmp/fastdbfs.log
+# level=DEBUG
 
 [DEFAULT]
 
