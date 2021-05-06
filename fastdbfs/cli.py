@@ -76,6 +76,7 @@ class CLI(cmd.Cmd):
             "error_delay_increment": 10,
             "log_level": "WARNING"
         }
+        self._cfg["logging"] = {}
 
         fns = [os.path.expanduser(fn) for fn in ("~/.databrickscfg", "~/.fastdbfs", "~/.config/fastdbfs")]
         self._cfg.read(fns)
@@ -598,7 +599,7 @@ class CLI(cmd.Cmd):
         # DEFAULTS contaminates everything, so we have to explicitly
         # estate the fields that we want passed to
         # logging.basicConfig().
-        section = self._cfg.get("logging", {})
+        section = self._cfg["logging"]
         logcfg = { k: section[k]
                    for k in ("filename", "filemode", "format", "datefmt",
                              "style", "level", "encoding", "errors")
