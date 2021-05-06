@@ -16,7 +16,7 @@ As development of `fastdbfs` progresses, from time to time and at
 points where it is considered to be more or less stable, releases on
 PyPi are done.
 
-Those versions can be installed as follows:
+Those versions can be installed using `pip` as follows:
 
     pip install fastdbfs
 
@@ -38,6 +38,16 @@ Once the program is installed, just invoke it from the command line as
 
 I don't recomend at this point the usage of the python modules
 directly as the interfaces are not stable yet.
+
+## Configuration
+
+`fastdbfs` reads its configuration from `~/.config/fastdbfs` and
+`~/.databrickscfg` (on windows that translates to something like
+`C:\Users\migueldcs\.config\fastdbfs` and
+`C:\Users\migueldcs\.databrickscfg` respectively).
+
+See the sample configuration file `fastdbfs-sample-config` distributed
+with the program.
 
 ## Commands
 
@@ -90,12 +100,6 @@ commands can be used:
 *TODO*
 
 
-# Configuration
-
-`fastdbfs` reads its configuration from `~/.config/fastdbfs` and
-`~/databrickscfg`.
-
-See the sample files accompaning the program.
 
 # Limitations
 
