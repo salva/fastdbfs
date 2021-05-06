@@ -260,7 +260,7 @@ class CLI(cmd.Cmd):
             raise Exception("Target file already exists")
 
         parent_dir = os.path.dirname(target)
-        fastdbfs.util.mkpaths(parent_dir)
+        fastdbfs.util.mkdirs(parent_dir)
 
         with progressbar.DataTransferBar() as bar:
             def update_cb(size, bytes_copied):
