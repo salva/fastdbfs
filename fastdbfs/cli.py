@@ -299,16 +299,66 @@ class CLI(cmd.Cmd):
             return fastdbfs.util.call_external_processor_json(cmd, data)
         return filter
 
-    @flag("quiet", "nowarn")
+    @flag("quiet", "nowarn", "q")
     @flag("long", "ls", "l")
     @flag("human", "h")
     @_find_predicates
     @remote("path", default=".")
     def do_find(self, path, quiet, long, human, external_filter, **predicates):
         """
-        find [path]
+        find [OPTS] [RULES] [path]
 
-        List files recursively.
+        List files recursively according to a set of rules.
+
+        Supported options are as follows:
+
+          --nowarn     Do not report errors happening while
+                       walking the file system tree.
+          -l, --ls     Display file and directory properties.
+          -h, --human  Show sizes like 1K, 210M, 4G, etc.
+
+        In addition to those, find also supports the following set of
+        options for selectively picking the files that should be
+        displayed:
+
+          --min-size=SIZE, --max-size=SIZE
+                       Picks files according to their size (this rule
+                       is ignored for directories).
+          --newer-than=date, --older-than=date
+                       Picks entries according to their modification time.
+          --name=GLOB_PATTERN
+                       Picks only files and directories whose basename
+                       matches the given glob pattern.
+          --iname=GLOB_PATTERN
+                       Case insensitive version of "name".
+          --re=REGULAR_EXPRESSION
+                       Picks only entries whose basename matches the
+                       given regular expression.
+          --ire=REGULAR_EXPRESSION
+                       Case insensitive version of "ire".
+          --wholere=REGULAR_EXPRESSION
+                       Picks file names whose relative path matches the
+                       given regular expression.
+          --iwholere=REGULAR_EXPRESSION
+                       Case insensitive version of "wholere".
+          --external-filter=CMD
+                       Filters entries using an external command.
+
+        Also, any of the rules above can be negated preceding it by
+        "--exclude", for instance "--exclude-iname=*.jpeg"
+
+        The rules above never cut the file system traversal. So for
+        instance, a rule discarding some subdirectory, doesn't
+        preclude that subdirectory for being traversed and its child
+        entries picked.
+
+        The basename is the last component of a patch. Relative paths
+        are considered relative to the root directory passed as an
+        argument.
+
+        Example:
+
+          find --ls --newer-than=yesterday --max-size=100K --iname=*.jpg
         """
 
         with progressbar.ProgressBar(redirect_stdout=True, redirect_stderr=True) as bar:
@@ -361,20 +411,31 @@ class CLI(cmd.Cmd):
         self._dbfs.rput(src, target, overwrite=overwrite, update_cb=self._rput_update_cb)
 
     @flag("verbose", "v")
-    @flag("quiet", "q")
+    @flag("nowarn", "quiet", "q")
     @remote("src")
     @local("target", arity="?")
     @_find_predicates
-    def do_rget(self, verbose, quiet, src, target, external_filter, **predicates):
+    def do_rget(self, verbose, nowarn, src, target, external_filter, **predicates):
         """
-        rget [src [target]]
+        rget [OPTS] [RULES] [src [target]]
 
         Copies the given remote directory to the local system
         recursively.
+
+        The options supported are as follows:
+
+        -v, --verbose  Display the names of the files being copied.
+        --nowarn       Do not show warnings.
+
+        In addition to those, "rget" also accepts the same set of
+        predicates as "find" for selecting the entries to copy.
+
+        Example:
+          rget --iname *.png --exclude-iwholere=/temp/ . /tmp/pngs
         """
 
-        if verbose and quiet:
-            raise Exception("verbose and quite can not be used together")
+        if verbose and nowarn:
+            raise Exception("verbose and nowarn can not be used together")
 
         if target is None:
             # FIXME: Windows again
@@ -386,7 +447,7 @@ class CLI(cmd.Cmd):
 
         with progressbar.ProgressBar(redirect_stderr=True) as bar:
             def update_cb(entry, max_entries, done):
-                if not quiet:
+                if not nowarn:
                     relpath = entry.fi.relpath(self._dbfs.cwd, src)
                     if entry.ex:
                         print(f"{relpath}: FAILED. {entry.ex}", file=sys.stderr)
