@@ -190,7 +190,7 @@ class CLI(cmd.Cmd):
 
     @flag("overwrite", "o")
     @local("src")
-    @remote("target", arity="?")
+    @remote("target", default=".")
     def do_put(self, overwrite, src, target):
         """
         put [OPTS] src [target]
