@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import inspect
+import tempfile
 
 from fastdbfs.fileinfo import FileInfo
 from fastdbfs.swarm import Swarm
@@ -308,7 +309,7 @@ class DBFS():
                                       update_cb=self._asynchronize(update_cb))
 
     async def _async_get_chunk(self, session, path, offset, length, out):
-        # print(f"processing chunk at {offset}")
+        logging.debug(f"processing chunk at {offset}, length {length}")
         remaining = length
         while remaining > 0:
             r = await self._async_http_get(session,
@@ -316,6 +317,7 @@ class DBFS():
                                            path=path, offset=offset, length=length)
 
             bytes_read = r["bytes_read"]
+            logging.debug(f"received {bytes_read} bytes, offset {offset}")
             if bytes_read == 0 or bytes_read > remaining:
                 raise Exception("Invalid data response")
 
@@ -332,15 +334,31 @@ class DBFS():
 
     async def _async_get(self, session, low_swarm, src, target,
                          overwrite=False, mkdirs=False, update_cb=None):
-
+        parentdir = os.path.dirname(target)
         if mkdirs:
-            fastdbfs.util.mkdirs(os.path.dirname(target))
+            fastdbfs.util.mkdirs(parentdir)
 
         # FIXME: a race condition exists here!
         if not overwrite and os.path.exists(target):
             raise Exception("File already exists")
-        with open(target, "wb") as out:
-            await self._async_get_to_file(session, low_swarm, src, out, update_cb)
+        tmp_fn = await self._async_get_to_temp(session, low_swarm, src,
+                                               dir=parentdir, update_cb=update_cb)
+        os.rename(tmp_fn, target)
+
+    async def _async_get_to_temp(self, session, low_swarm, src, update_cb=None,
+                                 prefix=".fastdbfs-transfer-", **mkstemp_args):
+        try:
+            (f, target) = tempfile.mkstemp(prefix=prefix, **mkstemp_args)
+            out = os.fdopen(f, "wb")
+            await self._async_get_to_file(session, low_swarm, src, out, update_cb=update_cb)
+            out.close()
+            return target
+        except Exception as ex:
+            try: out.close()
+            except: pass
+            try: os.remove(target)
+            except: pass
+            raise ex
 
     async def _async_get_to_file(self, session, low_swarm, src, out, update_cb=None):
         src = self._resolve(src)
@@ -389,6 +407,23 @@ class DBFS():
                 except: pass
 
         return fi
+
+    def get_to_temp(self, src, update_cb=None, **mkstemp_args):
+        swarm = self._make_swarm()
+        task = self._async_call_with_session(self._async_get_to_temp,
+                                             swarm, src,
+                                             update_cb=self._asynchronize(update_cb),
+                                             **mkstemp_args)
+        return swarm.loop_until_complete(task)
+
+    def get(self, src, target,
+            overwrite=False, mkdirs=True, update_cb=None):
+        swarm = self._make_swarm()
+        task = self._async_call_with_session(self._async_get,
+                                             swarm, src, target,
+                                             overwrite=overwrite, mkdirs=mkdirs,
+                                             update_cb=self._asynchronize(update_cb))
+        return swarm.loop_until_complete(task)
 
     def get_to_file(self, src, out, update_cb=None):
         swarm = self._make_swarm()
@@ -477,7 +512,8 @@ class DBFS():
                                self._asynchronize(filter_cb),
                                predicates=predicates)
 
-    async def _async_rget(self, session, src, target, update_cb=None, filter_cb=None, predicates={}):
+    async def _async_rget(self, session, src, target, overwrite=False,
+                          update_cb=None, filter_cb=None, predicates={}):
         src = self._resolve(src)
 
         # We use two worker queues here, low is for the low level
@@ -539,6 +575,7 @@ class DBFS():
                                          response_queue=response_queue,
                                          low_swarm=low_swarm,
                                          src=fi.abspath(), target=local_path,
+                                         overwrite=overwrite,
                                          mkdirs=True)
                     active_gets[relpath] = entry
                     return # don't report the entry yet!
@@ -562,9 +599,10 @@ class DBFS():
 
         await low_swarm.run_while(control())
 
-    def rget(self, src, target, update_cb=None, filter_cb=None, predicates={}):
+    def rget(self, src, target, overwrite=False, update_cb=None, filter_cb=None, predicates={}):
         self._run_with_session(self._async_rget,
                                src, target,
+                               overwrite=overwrite,
                                filter_cb=self._asynchronize(filter_cb),
                                update_cb=self._asynchronize(update_cb),
                                predicates=predicates)

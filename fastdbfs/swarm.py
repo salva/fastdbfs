@@ -87,7 +87,8 @@ class Swarm:
                     value = await cb(session, **kwargs)
                     res = (task_key, value, None)
                 except Exception as ex:
-                    logging.debug(f"Swarm {self.name}/{ix} running task {task_key} failed with exception {ex}")
+                    logging.debug(f"Swarm {self.name}/{ix} running task {task_key} failed with exception {ex}",
+                                  exc_info=True)
                     res = (task_key, None, ex)
 
                 logging.debug(f"Swarm {self.name}/{ix} ended task {task_key}")

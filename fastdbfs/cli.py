@@ -6,10 +6,7 @@ import os.path
 import posixpath
 import traceback
 import time
-import shlex
-import pathlib
 import subprocess
-import tempfile
 import logging
 import progressbar
 
@@ -214,30 +211,10 @@ class CLI(cmd.Cmd):
 
         with progressbar.DataTransferBar() as bar:
             def update_cb(size, bytes_copied):
-                bar.max_size=size
+                bar.max_value=size
                 bar.update(bytes_copied)
 
             self._dbfs.put(src, target, overwrite=overwrite, update_cb=update_cb)
-
-    def _get_to_temp(self, src,  update_cb=None, prefix=".tmp-", suffix=None, **kwargs):
-        try:
-            if suffix is None:
-                bn = posixpath.basename(src)
-                try: suffix = bn[bn.rindex("."):]
-                except: suffix = ""
-
-            (f, target) = tempfile.mkstemp(prefix=prefix, suffix=suffix, **kwargs)
-            out = os.fdopen(f, "wb")
-            self._dbfs.get_to_file(src, out, update_cb=update_cb)
-            out.close()
-            return target
-
-        except Exception as ex:
-            try: out.close()
-            except: pass
-            try: os.remove(tmp_fn)
-            except: pass
-            raise ex
 
     @flag("overwrite", "o")
     @remote("src")
@@ -256,23 +233,33 @@ class CLI(cmd.Cmd):
 
         if os.path.isdir(target):
             target = os.path.join(target, os.path.basename(src))
-        if os.path.exists(target) and not overwrite:
-            raise Exception("Target file already exists")
 
         parent_dir = os.path.dirname(target)
         fastdbfs.util.mkdirs(parent_dir)
 
         with progressbar.DataTransferBar() as bar:
             def update_cb(size, bytes_copied):
-                bar.max_size=size
+                bar.max_value=size
                 bar.update(bytes_copied)
 
-            tmp_target = self._get_to_temp(src, update_cb=update_cb,
-                                           prefix=".transferring-", suffix="", dir=parent_dir)
-        os.rename(tmp_target, target)
+            self._dbfs.get(src, target,
+                           overwrite=overwrite,
+                           update_cb=update_cb)
+
+    def _get_to_temp(self, src, suffix=None, **mkstemp_args):
+        if suffix is None:
+            bn = posixpath.basename(src)
+            try: suffix = bn[bn.rindex("."):]
+            except: suffix = ""
+
+        with progressbar.DataTransferBar() as bar:
+            def update_cb(size, bytes_copied):
+                bar.max_value=size
+                bar.update(bytes_copied)
+            return self._dbfs.get_to_temp(src, suffix=suffix, **mkstemp_args)
 
     def _get_and_call(self, src, cb):
-        target = self._get_to_temp(src)
+        target = self._dbfs.get_to_temp(src)
         try:
             cb(target)
         finally:
@@ -413,10 +400,12 @@ class CLI(cmd.Cmd):
 
     @flag("verbose", "v")
     @flag("nowarn", "quiet", "q")
+    @flag("overwrite", "o")
     @remote("src")
     @local("target", arity="?")
     @_find_predicates
-    def do_rget(self, verbose, nowarn, src, target, external_filter, **predicates):
+    def do_rget(self, verbose, nowarn, overwrite,
+                src, target, external_filter, **predicates):
         """
         rget [OPTS] [RULES] [src [target]]
 
@@ -425,8 +414,9 @@ class CLI(cmd.Cmd):
 
         The options supported are as follows:
 
-        -v, --verbose  Display the names of the files being copied.
-        --nowarn       Do not show warnings.
+        -v, --verbose    Display the names of the files being copied.
+        --nowarn         Do not show warnings.
+        -o, --overwrite  Overwrite existing files.
 
         In addition to those, "rget" also accepts the same set of
         predicates as "find" for selecting the entries to copy.
@@ -457,9 +447,10 @@ class CLI(cmd.Cmd):
                 bar.max_value = max_entries
                 bar.update(done)
             self._dbfs.rget(src, target,
-                            update_cb,
-                            filter_cb = self._wrap_external_filter(external_filter),
-                            predicates = predicates)
+                            overwrite=overwrite,
+                            update_cb=update_cb,
+                            filter_cb=self._wrap_external_filter(external_filter),
+                            predicates=predicates)
 
     @remote("path")
     def do_cat(self, path):
@@ -604,22 +595,8 @@ class CLI(cmd.Cmd):
                    for k in ("filename", "filemode", "format", "datefmt",
                              "style", "level", "encoding", "errors")
                    if k in section }
-
-        print(f"logcfg: {logcfg}")
-
         logging.basicConfig(force=1, **logcfg)
 
         if "token" in self._cfg["DEFAULT"]:
             self._do_open("DEFAULT")
         self._set_prompt()
-
-    def _parse(self, arg, *defaults, min=0, max=None):
-        args = shlex.split(arg)
-        max1 = max if max is not None else min + len(defaults)
-        if ((len(args) < min) or
-            (max1 >= 0 and len(args) > max1)):
-            raise Exception("wrong number of arguments")
-
-        args += defaults[len(args)-min:]
-
-        return args
