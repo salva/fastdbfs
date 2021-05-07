@@ -605,19 +605,12 @@ class CLI(cmd.Cmd):
     def do_vi(self, new, path):
         self._do_edit(path, new=new, editor="vi")
 
-    def do_shell(self, arg):
-        """
-        !cmd args...
-
-        Runs the given command locally.
-        """
-        os.system(arg)
-
     @option("backup", "i")
     @arg("path")
     @arg("cmd", arity="+")
     def do_filter(self, backup, path, cmd):
-        """filter [OPTS] path cmd...
+        """
+        filter [OPTS] path cmd...
 
         Retrieves the remote file and uses the given command to
         process it. The output of the filter is saved as the new file.
@@ -644,6 +637,14 @@ class CLI(cmd.Cmd):
                 try: os.remove(out_fn)
                 except: pass
         self._get_call_and_put(path, cb, backup=backup)
+
+    def do_shell(self, arg):
+        """
+        !cmd args...
+
+        Runs the given command locally.
+        """
+        os.system(arg)
 
     @argless()
     def do_EOF(self):
