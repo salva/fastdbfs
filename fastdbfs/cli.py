@@ -206,7 +206,7 @@ class CLI(cmd.Cmd):
         try:
             fi = self._dbfs.get_status(target)
             if fi.is_dir():
-                target = os.path.join(target, os.path.basename(src))
+                target = os.path.join(target, posixpath.basename(src))
         except: pass
 
         with progressbar.DataTransferBar() as bar:
@@ -214,7 +214,9 @@ class CLI(cmd.Cmd):
                 bar.max_value=size
                 bar.update(bytes_copied)
 
-            self._dbfs.put(src, target, overwrite=overwrite, update_cb=update_cb)
+            self._dbfs.put(src, target,
+                           overwrite=overwrite,
+                           update_cb=update_cb)
 
     @flag("overwrite", "o")
     @remote("src")
@@ -277,6 +279,24 @@ class CLI(cmd.Cmd):
           -R, --recursive Delete files and directories recursively.
         """
         self._dbfs.rm(path, recursive=recursive)
+
+    @remote("src")
+    @remote("target")
+    def do_mv(self, src, target):
+        """
+        mv src target
+
+        Move the file or directory "src" to "target" in the remote
+        system.
+        """
+
+        try:
+            fi = self._dbfs.get_status(target)
+            if fi.is_dir():
+                target = posixpath.join(target, posixpath.basename(src))
+        except: pass
+
+        self._dbfs.mv(src, target)
 
     def _wrap_external_filter(self, cmd):
         if cmd is None:
@@ -401,10 +421,11 @@ class CLI(cmd.Cmd):
     @flag("verbose", "v")
     @flag("nowarn", "quiet", "q")
     @flag("overwrite", "o")
+    @flag("sync", "synchronize")
     @remote("src")
     @local("target", arity="?")
     @_find_predicates
-    def do_rget(self, verbose, nowarn, overwrite,
+    def do_rget(self, verbose, nowarn, overwrite, sync,
                 src, target, external_filter, **predicates):
         """
         rget [OPTS] [RULES] [src [target]]
@@ -417,9 +438,16 @@ class CLI(cmd.Cmd):
         -v, --verbose    Display the names of the files being copied.
         --nowarn         Do not show warnings.
         -o, --overwrite  Overwrite existing files.
+        --sync           Copy only files that have changed.
 
         In addition to those, "rget" also accepts the same set of
         predicates as "find" for selecting the entries to copy.
+
+        When "sync" mode is enabled, before transferring a file it is
+        checked whether a local file already exists at the
+        destination, if it is as new as the remote one and if the
+        sizes are the same. The download is skipped whan all these
+        conditions are true.
 
         Example:
           rget --iname *.png --exclude-iwholere=/temp/ . /tmp/pngs
@@ -448,6 +476,7 @@ class CLI(cmd.Cmd):
                 bar.update(done)
             self._dbfs.rget(src, target,
                             overwrite=overwrite,
+                            sync=sync,
                             update_cb=update_cb,
                             filter_cb=self._wrap_external_filter(external_filter),
                             predicates=predicates)
@@ -508,7 +537,7 @@ class CLI(cmd.Cmd):
             stat_after = os.stat(tmp_fn)
             if (stat_after.st_mtime > the_past):
                 with open(tmp_fn, "rb") as infile:
-                    self._dbfs.put_from_file(infile, src, size=stat_after.st_size, overwrite=True)
+                    self._dbfs.put_from_file(infile, path, size=stat_after.st_size, overwrite=True)
             else:
                 raise Exception(f"File was not modified!")
 
@@ -528,11 +557,11 @@ class CLI(cmd.Cmd):
         self._do_edit(path, editor)
 
     @remote("path")
-    def do_mg(self, arg):
+    def do_mg(self, path):
         self._do_edit(path, editor="mg")
 
     @remote("path")
-    def do_vi(self, arg):
+    def do_vi(self, path):
         self._do_edit(path, editor="vi")
 
     def do_shell(self, arg):

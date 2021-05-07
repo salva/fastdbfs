@@ -240,6 +240,15 @@ class DBFS():
                 # Yes, fix it!
                 self.cwd = posixpath.split(path)[0]
 
+    def _async_mv(self, session, src, target):
+        return self._async_http_post(session, "api/2.0/dbfs/move",
+                                     source_path=self._resolve(src),
+                                     destination_path=self._resolve(target))
+
+    def mv(self, src, target):
+        return self._run_with_session(self._async_mv,
+                                      src, target)
+
     def _assert_dir(self, path):
         if not self.get_status(path).is_dir():
             raise Exception("Not a directory")
@@ -512,9 +521,27 @@ class DBFS():
                                self._asynchronize(filter_cb),
                                predicates=predicates)
 
-    async def _async_rget(self, session, src, target, overwrite=False,
+    def _needs_sync(self, local_path, fi):
+        """Checks wheter the file at local_path is older or has a different
+        size than the one in fi.
+        """
+        try:
+            st = os.stat(local_path)
+            logging.debug(f"comparing file {local_path} with stats {st} with fi {fi}")
+            if st.st_size != fi.size():
+                return True
+            if st.st_mtime_ns  < fi.mtime() * 1000000:
+                return True
+            return False
+        except:
+            return True
+
+    async def _async_rget(self, session, src, target, overwrite=False, sync=False,
                           update_cb=None, filter_cb=None, predicates={}):
         src = self._resolve(src)
+
+        if sync:
+            overwrite=True
 
         # We use two worker queues here, low is for the low level
         # requests. We pass it to the _self_get method without ever
@@ -557,6 +584,9 @@ class DBFS():
             local_path = os.path.abspath(os.path.join(target, relpath))
             entries = max_entries
             if fi.is_dir():
+                if os.path.isdir(local_path):
+                    logging.debug(f"directory already exists for {relpath}")
+                    entry.good = False
                 if entry.good: # mkdir
                     logging.debug(f"making dir for {relpath}")
                     try:
@@ -568,6 +598,9 @@ class DBFS():
                 else:
                     logging.debug(f"discarding dir {relpath}")
             else:
+                if sync and entry.good and not self._needs_sync(local_path, fi):
+                        logging.debug(f"file {relpath} doesn't need synchronization")
+                        entry.good = False
                 if entry.good:
                     logging.debug(f"queueing download of {relpath}")
                     await high_swarm.put(self._async_get,
@@ -599,10 +632,13 @@ class DBFS():
 
         await low_swarm.run_while(control())
 
-    def rget(self, src, target, overwrite=False, update_cb=None, filter_cb=None, predicates={}):
+    def rget(self, src, target,
+             overwrite=False, sync=False,
+             update_cb=None, filter_cb=None, predicates={}):
         self._run_with_session(self._async_rget,
                                src, target,
                                overwrite=overwrite,
+                               sync=sync,
                                filter_cb=self._asynchronize(filter_cb),
                                update_cb=self._asynchronize(update_cb),
                                predicates=predicates)

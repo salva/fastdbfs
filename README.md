@@ -99,8 +99,6 @@ commands can be used:
 
 *TODO*
 
-
-
 # Limitations
 
 * Development is primarily done on Linux and only from time to time is
@@ -128,7 +126,7 @@ commands can be used:
 
 # TODO
 
-* Add more commands: mirror, mget, mput, glob, etc.
+* Add more commands: mget, mput, glob, etc.
 
 * Improve command line parsing allowing for command flags, pipes,
   redirections, etc.
@@ -140,9 +138,8 @@ commands can be used:
 * Allow passing commands when the program is launched (for instance,
   setting the default profile).
 
-* Help system.
-
-* Better usability.
+* Catch C-c during long tasks and perform an orderly cleanup
+  (i.e. remove temporary files).
 
 * Improve code quality.
 

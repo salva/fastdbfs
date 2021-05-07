@@ -29,6 +29,9 @@ class FileInfo():
         self._mtime = mtime
         self._abspath = abspath
 
+    def __repr__(self):
+        return f"fi(abspath={self._abspath}, is_dir={self._is_dir}, size={self._size}, mtime={self._mtime})"
+
     def to_data(self):
         return { "abspath": self._abspath,
                  "size":    self._size,
