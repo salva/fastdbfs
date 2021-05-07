@@ -184,7 +184,7 @@ class CLI(cmd.Cmd):
         """
         lpwd
 
-        Displays the local current directory.
+        Displays the local working directory.
         """
 
         print(os.getcwd())
