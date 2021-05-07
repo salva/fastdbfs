@@ -273,8 +273,8 @@ By default `fastdbfs` picks the editor from the environment variable
 `EDITOR`. It can also be customized in the configuration file creating
 an `editor` entry inside the `fastdbfs` section.
 
-The commands `vi` and `mg` are shortcuts for `edit` that will use the
-corresponding editors.
+The commands `vi` and [`mg`](https://man.openbsd.org/mg.1) are
+shortcuts for `edit` that will use the corresponding editors.
 
 ### `!cmd ...`
 
@@ -309,8 +309,9 @@ Exits the client.
       time.
 
 
-* Glob expression checking is done using python `fnmatch` module that
-  only supports a very small subset of patterns. Specifically, it
+* Glob expression checking is done using python
+  [`fnmatch`](https://docs.python.org/3/library/fnmatch.html) module
+  that only supports a very small set of patterns. Specifically, it
   lacks support for alternations as in `*.{jpeg,jpg,png}`.
 
 # TODO
