@@ -46,8 +46,37 @@ directly as the interfaces are not stable yet.
 `C:\Users\migueldcs\.config\fastdbfs` and
 `C:\Users\migueldcs\.databrickscfg` respectively).
 
-See the sample configuration file `fastdbfs-sample-config` distributed
-with the program.
+Also, read the official Databricks documentation for instructions on
+how to [create a
+token](https://docs.databricks.com/dev-tools/cli/index.html#set-up-authentication)
+and how to [obtain the Cluster
+ID](https://docs.databricks.com/workspace/workspace-details.html#cluster-url-and-id).
+
+### Sample configuration
+
+```
+[fastdbfs]
+pager=less
+editor=vi
+
+[logging]
+filename=/tmp/fastdbfs.log
+level=INFO
+
+[DEFAULT]
+host = https://westeurope.azuredatabricks.net
+token = dapi1234567890abcdef1234567890abcdef
+cluster_id = 0111-222222-yoooh666
+
+[other-environment]
+host = https://westeurope.azuredatabricks.net
+token = dapi0123456789abcdef0123456789abcdef
+cluster_id = 0222-222222-yoooh666
+```
+
+A commented version of this configuration file if available
+[here](https://github.com/salva/fastdbfs/blob/master/fastdbfs-sample-config).
+
 
 ## Commands
 
@@ -304,7 +333,9 @@ Runs the given command locally.
 # Development and support
 
 The source code for this program is available from
-https://github.com/salva/fastdbfs
+[https://github.com/salva/fastdbfs](https://github.com/salva/fastdbfs).
+
+You can also use the GitHub bug-tracker to report any issues.
 
 
 # Copyright
@@ -322,4 +353,4 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.

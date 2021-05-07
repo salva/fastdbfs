@@ -71,8 +71,7 @@ class CLI(cmd.Cmd):
             "max_retries": 10,
             "pager": "less",
             "error_delay": 10,
-            "error_delay_increment": 10,
-            "log_level": "WARNING"
+            "error_delay_increment": 10
         }
         self._cfg["logging"] = {}
 
