@@ -43,8 +43,8 @@ directly as the interfaces are not stable yet.
 
 `fastdbfs` reads its configuration from `~/.config/fastdbfs` and
 `~/.databrickscfg` (on windows that translates to something like
-`C:\Users\migueldcs\.config\fastdbfs` and
-`C:\Users\migueldcs\.databrickscfg` respectively).
+`C:\Users\migueldcsa\.config\fastdbfs` and
+`C:\Users\migueldcsa\.databrickscfg` respectively).
 
 The official Databricks documentation contains instructions on how to
 [create a
