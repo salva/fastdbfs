@@ -201,6 +201,24 @@ class DBFS():
     def get_status(self, path):
         return self._run_with_session(self._async_get_status, path)
 
+    async def _async_filetest(self, session, path, fi_check_cb):
+        try:
+            fi = await self._async_get_status(session, path)
+            return fi_check_cb(fi)
+        except APIError as ex:
+            if ex.error_code == "RESOURCE_DOES_NOT_EXIST":
+                return False
+            raise ex
+
+    def filetest_e(self, path):
+        return self._filetest(path, lambda _: True)
+
+    def filetest_d(self, path):
+        self._filetest(path, lambda fi: fi.is_dir())
+
+    def filetest_f(self, path):
+        return self._filetest(path, lambda fi: not fi.is_dir())
+
     def _async_mkdir(self, session, path):
         path = self._resolve(path)
         return self._async_http_post(session, "api/2.0/dbfs/mkdirs", path=path)
@@ -240,18 +258,61 @@ class DBFS():
                 # Yes, fix it!
                 self.cwd = posixpath.split(path)[0]
 
-    def _async_mv(self, session, src, target):
+    def _async_simple_mv(self, session, src, target):
         return self._async_http_post(session, "api/2.0/dbfs/move",
                                      source_path=self._resolve(src),
                                      destination_path=self._resolve(target))
 
-    def mv(self, src, target):
+    async def _async_mv(self, session, src, target, overwrite=False):
+        src = self._resolve(src)
+        target = self._resolve(target)
+        try:
+            return await self._async_simple_mv(session, src, target)
+        except APIError as ex:
+            if (ex.error_code == "RESOURCE_ALREADY_EXISTS" and
+                await self._async_filetest(session, target,
+                                           lambda fi: not fi.is_dir())):
+                await self._async_rm(session, target)
+                return await self._async_simple_mv(session, src, target)
+            raise ex
+
+    def mv(self, src, target, overwrite=False):
         return self._run_with_session(self._async_mv,
-                                      src, target)
+                                      src, target,
+                                      overwrite=overwrite)
 
     def _assert_dir(self, path):
         if not self.get_status(path).is_dir():
             raise Exception("Not a directory")
+
+    async def _async_put(self, session, src, target, overwrite=False, update_cb=None):
+        target = self._resolve(target)
+        st = os.stat(src)
+        size = st.st_size
+        with open(src, "rb") as infile:
+            if update_cb:
+                await update_cb(size=size, bytes_copied=0)
+
+            if size > self.chunk_size:
+                return await _async_stream_put_from_file(session,
+                                                         infile, target,
+                                                         size=st.st_size,
+                                                         overwrite=overwrite,
+                                                         update_cb=update_cb)
+            else:
+                block = infile.read(size)
+                while len(block) < size:
+                    more = infile.read(size - len(block))
+                    if len(more) == 0:
+                        raise Exception("Unable to read data from local file")
+                    block += more
+                await self._async_http_post(session,
+                                            "api/2.0/dbfs/put",
+                                            path=self._resolve(target),
+                                            contents=base64.standard_b64encode(block).decode('ascii'),
+                                            overwrite=overwrite)
+                if update_cb:
+                    await update_cb(size=size, bytes_copied=size)
 
     async def _async_create(self, session, path, overwrite=False):
         path = self._resolve(path)
@@ -271,10 +332,10 @@ class DBFS():
                                      "api/2.0/dbfs/close",
                                      handle=handle)
 
-    async def _async_put_from_file(self, session, infile, target, size=None, overwrite=False,
-                                   update_cb=None):
+    async def _async_stream_put_from_file(self, session, infile, target,
+                                          size=None, overwrite=False,
+                                          update_cb=None):
         target = self._resolve(target)
-
         handle = await self._async_create(session, target, overwrite)
         try:
             bytes_copied = 0
@@ -300,16 +361,6 @@ class DBFS():
             try: await self._async_rm(target)
             except: pass
             raise ex
-
-    def put_from_file(self, infile, target, size=None, overwrite=False, update_cb=None):
-            return self._run_with_session(self._async_put_from_file,
-                                          infile, target, size, overwrite,
-                                          self._asynchronize(update_cb))
-
-    async def _async_put(self, session, src, target, **kwargs):
-        size = os.stat(src).st_size
-        with open(src, "rb") as infile:
-            return await self._async_put_from_file(session, infile, target, size, **kwargs)
 
     def put(self, src, target, overwrite, update_cb):
         return self._run_with_session(self._async_put,
@@ -358,13 +409,10 @@ class DBFS():
                                  prefix=".fastdbfs-transfer-", **mkstemp_args):
         try:
             (f, target) = tempfile.mkstemp(prefix=prefix, **mkstemp_args)
-            out = os.fdopen(f, "wb")
-            await self._async_get_to_file(session, low_swarm, src, out, update_cb=update_cb)
-            out.close()
-            return target
+            with os.fdopen(f, "wb") as out:
+                await self._async_get_to_file(session, low_swarm, src, out, update_cb=update_cb)
+                return target
         except Exception as ex:
-            try: out.close()
-            except: pass
             try: os.remove(target)
             except: pass
             raise ex

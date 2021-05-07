@@ -9,6 +9,7 @@ import time
 import subprocess
 import logging
 import progressbar
+import tempfile
 
 from fastdbfs.dbfs import DBFS, Disconnected
 from fastdbfs.cmdline import option, flag, arg, remote, local, argless, chain
@@ -204,8 +205,7 @@ class CLI(cmd.Cmd):
         """
 
         try:
-            fi = self._dbfs.get_status(target)
-            if fi.is_dir():
+            if self._dbfs.filetest_d(target):
                 target = os.path.join(target, posixpath.basename(src))
         except: pass
 
@@ -260,14 +260,6 @@ class CLI(cmd.Cmd):
                 bar.update(bytes_copied)
             return self._dbfs.get_to_temp(src, suffix=suffix, **mkstemp_args)
 
-    def _get_and_call(self, src, cb):
-        target = self._dbfs.get_to_temp(src)
-        try:
-            cb(target)
-        finally:
-            try: os.remove(target)
-            except: pass
-
     @flag("recursive", "R")
     @remote("path")
     def do_rm(self, recursive, path):
@@ -291,8 +283,7 @@ class CLI(cmd.Cmd):
         """
 
         try:
-            fi = self._dbfs.get_status(target)
-            if fi.is_dir():
+            if self._dbfs.filetest_d(target):
                 target = posixpath.join(target, posixpath.basename(src))
         except: pass
 
@@ -481,6 +472,68 @@ class CLI(cmd.Cmd):
                             filter_cb=self._wrap_external_filter(external_filter),
                             predicates=predicates)
 
+    def _get_and_call(self, src, cb):
+        target = self._dbfs.get_to_temp(src)
+        try:
+            return cb(target)
+        finally:
+            try: os.remove(target)
+            except: pass
+
+    def _get_call_and_put(self, src, cb, new=False, backup=None):
+
+        if backup == "":
+            raise Exception("Backup termination can not be the empty string")
+
+        def call_and_put(tmp_fn):
+            # in order to avoid race conditions we move the mtime
+            # of the temporal file into the past
+            the_past = int(time.time() - 2)
+            os.utime(tmp_fn, times=(the_past, the_past))
+
+            cb(tmp_fn)
+
+            stat_after = os.stat(tmp_fn)
+            if (stat_after.st_mtime > the_past):
+
+                if backup is not None:
+                    self._dbfs.mv(src, src+backup, overwrite=True)
+
+                with progressbar.DataTransferBar() as bar:
+                    def update_cb(size, bytes_copied):
+                        bar.max_value=size
+                        bar.update(bytes_copied)
+                    self._dbfs.put(tmp_fn, src, overwrite=True,
+                                   update_cb=update_cb)
+
+            else:
+                raise Exception(f"File was not modified!")
+        if new:
+            if self._dbfs.filetest_e(src):
+                raise Exception("File already exists")
+            bn = posixpath.basename(src)
+            try: suffix = bn[bn.rindex("."):]
+            except: suffix = ""
+            (f, tmp_fn) = tempfile.mkstemp(suffix=suffix)
+            os.close(f)
+            try:
+                return call_and_put(tmp_fn)
+            finally:
+                try: os.remove(tmp_fn)
+                except: pass
+
+        return self._get_and_call(src, call_and_put)
+
+    def _get_and_run(self, src, *cmd):
+        def cb(fn):
+            subprocess.run([*cmd, fn])
+        self._get_and_call(src, cb)
+
+    def _get_run_and_put(self, src, *cmd, new=False, backup=None):
+        def cb(fn):
+            subprocess.run([*cmd, fn], check=True)
+        self._get_call_and_put(src, cb, new=new, backup=backup)
+
     @remote("path")
     def do_cat(self, path):
         """
@@ -488,17 +541,12 @@ class CLI(cmd.Cmd):
 
         Prints the contents of the remote file.
         """
-        def cb(fn):
-            subprocess.run(["cat", "--", fn])
-        self._get_and_call(path, cb)
+        self._get_and_run(path, "cat", "--")
 
     def _do_show(self, path, pager=None):
         if pager is None:
             pager = self.cfg("fastdbfs", "pager")
-        def cb(fn):
-            subprocess.run([pager, "--", fn])
-        # print(f"pager: {pager}, cb: {cb}")
-        self._get_and_call(arg, cb)
+        self._get_and_run(path, pager, "--")
 
     @option("pager")
     @remote("path")
@@ -509,8 +557,6 @@ class CLI(cmd.Cmd):
         Display the contents of the remote file using your favorite
         pager.
         """
-
-        # print(f"pager: {pager}, path: {path}")
         self._do_show(path, pager=pager)
 
     @remote("path")
@@ -525,44 +571,39 @@ class CLI(cmd.Cmd):
     def do_batcat(self, path):
         self._do_show(path, pager="batcat")
 
-    def _do_edit(self, path, editor):
+    def _do_edit(self, path, editor, new):
         if editor is None:
             editor = self.cfg("fastdbfs", "editor", default=os.environ.get("EDITOR", "vi"))
-        def cb(tmp_fn):
-            # in order to avoid race conditions we force the mtime
-            # of the temporal file into the past
-            the_past = int(time.time() - 2)
-            os.utime(tmp_fn, times=(the_past, the_past))
-            subprocess.run([editor, "--", tmp_fn])
-            stat_after = os.stat(tmp_fn)
-            if (stat_after.st_mtime > the_past):
-                with open(tmp_fn, "rb") as infile:
-                    self._dbfs.put_from_file(infile, path, size=stat_after.st_size, overwrite=True)
-            else:
-                raise Exception(f"File was not modified!")
 
-        self._get_and_call(path, cb)
+        self._get_run_and_put(path, editor, "--", new=new)
 
+    @flag("new", "n")
     @option("editor")
     @remote("path")
-    def do_edit(self, editor, path):
+    def do_edit(self, editor, new, path):
         """
-        edit path
+        edit [OPTS] path
 
         Retrieves the remote file and opens it using your favorite editor.
 
         Once you closes the editor it copies the file back to the
         remote system.
+
+        The supported options are as follows:
+
+          -n, --new  Creates a new file.
         """
-        self._do_edit(path, editor)
+        self._do_edit(path, new=new, editor=editor)
 
+    @flag("new", "n")
     @remote("path")
-    def do_mg(self, path):
-        self._do_edit(path, editor="mg")
+    def do_mg(self, new, path):
+        self._do_edit(path, new=new, editor="mg")
 
+    @flag("new", "n")
     @remote("path")
-    def do_vi(self, path):
-        self._do_edit(path, editor="vi")
+    def do_vi(self, new, path):
+        self._do_edit(path, new=new, editor="vi")
 
     def do_shell(self, arg):
         """
@@ -571,6 +612,38 @@ class CLI(cmd.Cmd):
         Runs the given command locally.
         """
         os.system(arg)
+
+    @option("backup", "i")
+    @arg("path")
+    @arg("cmd", arity="+")
+    def do_filter(self, backup, path, cmd):
+        """filter [OPTS] path cmd...
+
+        Retrieves the remote file and uses the given command to
+        process it. The output of the filter is saved as the new file.
+
+        Supported options are:
+
+          -i, --backup=suffix  The contents of the old file are saved
+                               to a new file with the given suffix
+                               attached to its name.
+
+        Examples:
+          filter data.json jq .
+          filter -i.bak example.txt -- perl -ne 'print lc $_'
+        """
+        def cb(in_fn):
+            (f, out_fn) = tempfile.mkstemp()
+            try:
+                with os.fdopen(f, "wb") as outfile:
+                    with open(in_fn, "rb") as infile:
+                        subprocess.run(cmd, stdin=infile, stdout=outfile, check=True)
+                os.remove(in_fn)
+                os.rename(out_fn, in_fn)
+            finally:
+                try: os.remove(out_fn)
+                except: pass
+        self._get_call_and_put(path, cb, backup=backup)
 
     @argless()
     def do_EOF(self):
