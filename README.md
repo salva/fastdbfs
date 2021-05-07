@@ -56,7 +56,7 @@ commands can be used:
 
 ### `open [profile]`
 
-sets the active Databricks profile used for communicating.
+Sets the active Databricks profile used for communicating.
 
 By default it uses `DEFAULT`.
 
@@ -86,9 +86,81 @@ The supported options are as follows:
 
     Print file sizes in a human friendly manner.
 
-### `find [directory]`
+### `find [OPTS] [RULES] [directory]`
 
-List the contents of the given directory recursively.
+List files recursively according to a set of rules.
+
+Supported options are as follows:
+
+* `--nowarn`
+
+Do not report errors happening while walking the file system tree.
+
+* `-l`, `--ls`
+
+Display file and directory properties.
+
+* `-h`, `--human`
+
+    Show sizes like 1K, 210M, 4G, etc.
+
+    In addition to those, find also supports the following set of
+    options for selectively picking the files that should be
+    displayed:
+
+* `--min-size=SIZE`, `--max-size=SIZE`
+
+    Picks files according to their size (this rule
+    is ignored for directories).
+
+* `--newer-than=date`, `--older-than=date`
+
+    Picks entries according to their modification time.
+
+* `--name=GLOB_PATTERN`
+
+    Picks only files and directories whose basename matches the given
+    glob pattern.
+
+* `--iname=GLOB_PATTERN`
+
+    Case insensitive version of `name`.
+
+* `--re=REGULAR_EXPRESSION`
+
+    Picks only entries whose basename matches the given regular
+    expression.
+
+* `--ire=REGULAR_EXPRESSION`
+
+    Case insensitive version of `re`.
+
+* `--wholere=REGULAR_EXPRESSION`
+
+    Picks file names whose relative path matches the given regular
+    expression.
+
+* `--iwholere=REGULAR_EXPRESSION`
+
+    Case insensitive version of `wholere`.
+
+* `--external-filter=CMD`
+
+    Filters entries using an external command.
+
+Also, any of the rules above can be negated preceding it by
+`--exclude`, for instance `--exclude-iname=*.jpeg`
+
+The rules above never cut the file system traversal. So for instance,
+a rule discarding some subdirectory, doesn't preclude that
+subdirectory for being traversed and its child entries picked.
+
+The basename is the last component of a patch. Relative paths are
+considered relative to the root directory passed as an argument.
+
+Example:
+
+    find --ls --newer-than=yesterday --max-size=100K --iname=*.jpg
 
 ### `put src [dest]`
 
