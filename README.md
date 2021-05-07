@@ -46,8 +46,8 @@ directly as the interfaces are not stable yet.
 `C:\Users\migueldcs\.config\fastdbfs` and
 `C:\Users\migueldcs\.databrickscfg` respectively).
 
-Also, read the official Databricks documentation for instructions on
-how to [create a
+The official Databricks documentation contains instructions on how to
+[create a
 token](https://docs.databricks.com/dev-tools/cli/index.html#set-up-authentication)
 and how to [obtain the cluster
 ID](https://docs.databricks.com/workspace/workspace-details.html#cluster-url-and-id).
