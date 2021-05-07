@@ -54,44 +54,86 @@ with the program.
 Once `fastdbfs` is launched, a prompt appears and the following
 commands can be used:
 
-* `open [profile]`: sets the Databricks profile used for
-  communicating. By default it uses `DEFAULT`.
+### `open [profile]`
 
-* `cd [directory]`: sets the remote directory.
+sets the active Databricks profile used for communicating.
 
-* `lcd [directory]`: sets the local directory.
+By default it uses `DEFAULT`.
 
-* `lpwd`: shows the current local directory
+### `cd [directory]`
 
-* `ls [directory]`: list the contents of the given directory (or the
-  current one if the argument is omitted).
+Changes the remote current directory.
 
-* `find [directory]`: list the contents of the given directory
-  recursively.
+### `lcd [directory]`
 
-* `put src [dest]`: copies the file to the remote file system.
+Sets the local working directory.
 
-* `get src [dest]`: copies the remote file to the local filesystem.
+### `lpwd`
 
-* `rput src [dest]`: copies the local directory recursively.
+Shows the working local directory
 
-* `rget src [dest]`: copies the remote directory recursively.
+### `ls [OPTS] [directory]`:
 
-* `rm file`: removes the remote file.
+List the contents of the remote directory.
 
-* `mkdir dir`: creates the directory (and any non-existent parents).
+The supported options are as follows:
 
-* `mkcd dir`: creates the directory and sets it as the working
-  directory.
+* `-l`, `--long`
 
-* `cat file`: prints the contents of the remote file.
+    Include file properties size and modification time.
 
-* `more file`: shows the contents of the remote file.
+* `-h`, `--human`
 
-* `edit file`: retrieves the remote file, opens it in the configured
-  editor and if it is changed, it copies it back.
+    Print file sizes in a human friendly manner.
 
-* `!cmd ...`: runs the given command locally.
+### `find [directory]`
+
+List the contents of the given directory recursively.
+
+### `put src [dest]`
+
+Copies the file to the remote file system.
+
+### `get src [dest]`
+
+Copies the remote file to the local filesystem.
+
+### `rput src [dest]`
+
+Copies the local directory recursively.
+
+### `rget src [dest]`
+
+Copies the remote directory recursively.
+
+### `rm file`
+
+Removes the remote file.
+
+### `mkdir dir`
+
+Creates the directory (and any non-existent parents).
+
+### `mkcd dir`
+
+Creates the directory and sets it as the working directory.
+
+### `cat file`
+
+Prints the contents of the remote file.
+
+### `more file`
+
+Shows the contents of the remote file.
+
+### `edit file`
+
+Retrieves the remote file, opens it in the configured editor and if it
+is changed, it copies it back.
+
+### `!cmd ...`
+
+Runs the given command locally.
 
 * `exit`: exits the client.
 
