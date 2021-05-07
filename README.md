@@ -49,7 +49,7 @@ directly as the interfaces are not stable yet.
 Also, read the official Databricks documentation for instructions on
 how to [create a
 token](https://docs.databricks.com/dev-tools/cli/index.html#set-up-authentication)
-and how to [obtain the Cluster
+and how to [obtain the cluster
 ID](https://docs.databricks.com/workspace/workspace-details.html#cluster-url-and-id).
 
 ### Sample configuration
@@ -74,7 +74,7 @@ token = dapi0123456789abcdef0123456789abcdef
 cluster_id = 0222-222222-yoooh666
 ```
 
-A commented version of this configuration file if available
+A commented version of this configuration file is available
 [here](https://github.com/salva/fastdbfs/blob/master/fastdbfs-sample-config).
 
 
