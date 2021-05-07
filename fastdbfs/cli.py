@@ -272,14 +272,20 @@ class CLI(cmd.Cmd):
         """
         self._dbfs.rm(path, recursive=recursive)
 
+    @flag("overwrite", "o")
     @remote("src")
     @remote("target")
-    def do_mv(self, src, target):
+    def do_mv(self, overwrite, src, target):
         """
         mv src target
 
         Move the file or directory "src" to "target" in the remote
         system.
+
+        Supported options are as follows:
+
+          -o, --overwrite  If a file with the given target name
+                           already exists, it is overwritten.
         """
 
         try:
@@ -287,7 +293,7 @@ class CLI(cmd.Cmd):
                 target = posixpath.join(target, posixpath.basename(src))
         except: pass
 
-        self._dbfs.mv(src, target)
+        self._dbfs.mv(src, target, overwrite=overwrite)
 
     def _wrap_external_filter(self, cmd):
         if cmd is None:
