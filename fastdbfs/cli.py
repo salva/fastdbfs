@@ -132,18 +132,6 @@ class CLI(cmd.Cmd):
         self._dbfs.mkdir(path)
 
     def _do_ls(self, path, long, human):
-        """
-        ls [OPTS] [path]
-
-        List the contents of the remote directory.
-
-        The accepted options are as follows:
-
-          -l, --long   Print file properties.
-
-          -h, --human  Print file sizes in a human friendly manner.
-        """
-
         if long:
             size_format = "human_size" if human else "size"
             table = Table("right_text", size_format, "time", "text")
@@ -157,6 +145,17 @@ class CLI(cmd.Cmd):
     @flag("human", "h")
     @remote("path", default=".")
     def do_ls(self, path, long, human):
+        """
+        ls [OPTS] [path]
+
+        List the contents of the remote directory.
+
+        The accepted options are as follows:
+
+          -l, --long   Print file properties.
+
+          -h, --human  Print file sizes in a human friendly manner.
+        """
         return self._do_ls(path, long, human)
 
     @flag("human", "h")
