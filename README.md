@@ -337,6 +337,27 @@ The source code for this program is available from
 
 You can also use the GitHub bug-tracker to report any issues.
 
+# See also
+
+* Databricks [CLI
+  tool](https://docs.databricks.com/dev-tools/cli/index.html) and the
+  [`dbfs`
+  shortcut](https://docs.databricks.com/dev-tools/cli/dbfs-cli.html). The
+  PyPi [page](https://pypi.org/project/databricks-cli).
+
+* [Databricks
+  connect](https://docs.databricks.com/dev-tools/databricks-connect.html). The
+  PyPi [page](https://pypi.org/project/databricks-connect).
+
+* The documentation for the [DBFS
+  API](https://docs.databricks.com/dev-tools/api/latest/dbfs.html)
+  that `fastdbfs` calls under the hood.
+
+* [DBFS Explorer for
+  Databricks](https://datathirst.net/projects/dbfs-explorer) is
+  another client for DBFS providing a graphical user
+  interface. [Project](https://github.com/DataThirstLtd/DBFS-Explorer)
+  at GitHub.
 
 # Copyright
 
