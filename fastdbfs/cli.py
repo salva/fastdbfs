@@ -106,7 +106,7 @@ class CLI(cmd.Cmd):
         """
         cd [path]
 
-        Change the remote current directory.
+        Changes the remote current directory.
         """
 
         self._dbfs.cd(path)
@@ -265,6 +265,8 @@ class CLI(cmd.Cmd):
         """
         rm [OPTS] path
 
+        Removes the remote file or directory.
+
         Supported options are as follows:
 
           -R, --recursive Delete files and directories recursively.
@@ -339,7 +341,7 @@ class CLI(cmd.Cmd):
                        Picks only entries whose basename matches the
                        given regular expression.
           --ire=REGULAR_EXPRESSION
-                       Case insensitive version of "ire".
+                       Case insensitive version of "re".
           --wholere=REGULAR_EXPRESSION
                        Picks file names whose relative path matches the
                        given regular expression.
@@ -404,6 +406,10 @@ class CLI(cmd.Cmd):
 
         Copies the given local directory to the remote system
         recursively.
+
+        Supported options are:
+
+          -o, --overwrite  Overwrites remote files.
         """
         if target is None:
             normalized_src = os.path.normpath(src)
@@ -557,10 +563,14 @@ class CLI(cmd.Cmd):
     @remote("path")
     def do_show(self, pager, path):
         """
-        show path
+        show [OPTS] path
 
         Display the contents of the remote file using your favorite
         pager.
+
+        The supported options are as follows:
+
+          --pager=PAGER  Picks the pager.
         """
         self._do_show(path, pager=pager)
 
@@ -597,6 +607,8 @@ class CLI(cmd.Cmd):
         The supported options are as follows:
 
           -n, --new  Creates a new file.
+          --editor=EDITOR
+                     Picks the editor.
         """
         self._do_edit(path, new=new, editor=editor)
 

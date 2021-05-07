@@ -78,13 +78,9 @@ List the contents of the remote directory.
 
 The supported options are as follows:
 
-* `-l`, `--long`
+* `-l`, `--long`: Include file properties size and modification time.
 
-    Include file properties size and modification time.
-
-* `-h`, `--human`
-
-    Print file sizes in a human friendly manner.
+* `-h`, `--human`: Print file sizes in a human friendly manner.
 
 ### `find [OPTS] [RULES] [directory]`
 
@@ -92,61 +88,40 @@ List files recursively according to a set of rules.
 
 Supported options are as follows:
 
-* `--nowarn`
+* `--nowarn`: Do not report errors happening while walking the file
+  system tree.
 
-Do not report errors happening while walking the file system tree.
+* `-l`, `--ls`: Display file and directory properties.
 
-* `-l`, `--ls`
+* `-h`, `--human`: Show sizes like `1K`, `210M`, `4G`, etc.
 
-Display file and directory properties.
+  In addition to those, find also supports the following set of
+  options for selectively picking the files that should be
+  displayed:
 
-* `-h`, `--human`
+* `--min-size=SIZE`, `--max-size=SIZE`: Picks files according to their
+    size (this rule is ignored for directories).
 
-    Show sizes like 1K, 210M, 4G, etc.
+* `--newer-than=date`, `--older-than=date`: Picks entries according to
+  their modification time.
 
-    In addition to those, find also supports the following set of
-    options for selectively picking the files that should be
-    displayed:
+* `--name=GLOB_PATTERN`: Picks only files and directories whose
+  basename matches the given glob pattern.
 
-* `--min-size=SIZE`, `--max-size=SIZE`
+* `--iname=GLOB_PATTERN`: Case insensitive version of `name`.
 
-    Picks files according to their size (this rule
-    is ignored for directories).
+* `--re=REGULAR_EXPRESSION`: Picks only entries whose basename matches
+  the given regular expression.
 
-* `--newer-than=date`, `--older-than=date`
+* `--ire=REGULAR_EXPRESSION`: Case insensitive version of `re`.
 
-    Picks entries according to their modification time.
+* `--wholere=REGULAR_EXPRESSION`: Picks file names whose relative path
+    matches the given regular expression.
 
-* `--name=GLOB_PATTERN`
+* `--iwholere=REGULAR_EXPRESSION`: Case insensitive version of
+  `wholere`.
 
-    Picks only files and directories whose basename matches the given
-    glob pattern.
-
-* `--iname=GLOB_PATTERN`
-
-    Case insensitive version of `name`.
-
-* `--re=REGULAR_EXPRESSION`
-
-    Picks only entries whose basename matches the given regular
-    expression.
-
-* `--ire=REGULAR_EXPRESSION`
-
-    Case insensitive version of `re`.
-
-* `--wholere=REGULAR_EXPRESSION`
-
-    Picks file names whose relative path matches the given regular
-    expression.
-
-* `--iwholere=REGULAR_EXPRESSION`
-
-    Case insensitive version of `wholere`.
-
-* `--external-filter=CMD`
-
-    Filters entries using an external command.
+* `--external-filter=CMD`: Filters entries using an external command.
 
 Also, any of the rules above can be negated preceding it by
 `--exclude`, for instance `--exclude-iname=*.jpeg`
@@ -164,27 +139,69 @@ Example:
 
 ### `put src [dest]`
 
-Copies the file to the remote file system.
+Copies the given local file to the remote system.
 
-### `get src [dest]`
+Supported options are:
 
-Copies the remote file to the local filesystem.
+* `-o`, `--overwrite`: When a file already exists at the target
+  location, it is overwritten.
 
-### `rput src [dest]`
+### `get [OPTS] src [dest]`
 
-Copies the local directory recursively.
+Copies the given remote file to the local system.
 
-### `rget src [dest]`
+Supported options are as follows:
 
-Copies the remote directory recursively.
+* `-o`, `--overwrite`: When a file already exists at the target
+  location, it is overwritten.
 
-### `rm file`
+### `rget [OPTS] [RULES] [src [target]]`
 
-Removes the remote file.
+Copies the given remote directory to the local system
+recursively.
+
+The options supported are as follows:
+
+* `-v`, `--verbose`: Display the names of the files being copied.
+
+* `--nowarn`: Do not show warnings.
+
+* `-o`, `--overwrite`: Overwrite existing files.
+
+* `--sync`: Copy only files that have changed.
+
+  Before transferring a file it is checked whether a local file
+  already exists at the destination, if it is as new as the remote one
+  and if the sizes are the same. The download is skipped whan all
+  these conditions are true.
+
+In addition to those, `rget` also accepts the same set of predicates
+as `find` for selecting the entries to copy.
+
+Examples:
+
+    rget --iname *.png --exclude-iwholere=/temp/ . /tmp/pngs
+
+### `rput [OPTS] [src [dest]]`
+
+Copies the given local directory to the remote system
+recursively.
+
+Supported options are:
+
+* `-o`, `--overwrite`: Overwrites any previously existent remote file.
+
+### `rm [OPTS] path`
+
+Delete the remote file or directory.
+
+Supported options are as follows:
+
+* `-R`, `--recursive`: Delete files and directories recursively.
 
 ### `mkdir dir`
 
-Creates the directory (and any non-existent parents).
+Creates the directory (and any required parents).
 
 ### `mkcd dir`
 
@@ -194,14 +211,41 @@ Creates the directory and sets it as the working directory.
 
 Prints the contents of the remote file.
 
-### `more file`
+### `show [OPTS] file`
 
-Shows the contents of the remote file.
+Shows the contents of the remote file using the configured pager (for
+instance, `more`).
 
-### `edit file`
+The supported options are as follows:
 
-Retrieves the remote file, opens it in the configured editor and if it
-is changed, it copies it back.
+* `--pager=PAGER`: Picks the pager for displaying the file contents.
+
+The pager can be configured adding an entry `pager` inside the
+`fastdbfs` section in the configuration file. `less` is used by
+default.
+
+The commands `batcat`, `less` and `more` are shortcuts that use the
+corresponding pager.
+
+### `edit [OPTS] file`
+
+Retrieves the remote file and opens it using your favorite editor.
+
+Once the editor is closed, the file is copied back to the remote
+system
+
+The supported options are as follows:
+
+* `-n`, `--new`: Creates a new file.
+
+* `--editor=EDITOR`: Picks the editor.
+
+By default `fastdbfs` picks the editor from the environment variable
+`EDITOR`. It can also be customized in the configuration file creating
+an `editor` entry inside the `fastdbfs` section.
+
+The commands `vi` and `mg` are shortcuts for `edit` that will use the
+corresponding editors.
 
 ### `!cmd ...`
 
