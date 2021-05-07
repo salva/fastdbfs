@@ -280,7 +280,9 @@ corresponding editors.
 
 Runs the given command locally.
 
-* `exit`: exits the client.
+### `exit`
+
+Exits the client.
 
 ## External filters
 
