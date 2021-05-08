@@ -10,7 +10,7 @@ with open(readme_fn, encoding='utf-8') as file:
 
 setup(
     name='fastdbfs',
-    version='0.4',
+    version='0.5',
     description="Interactive command line client for Databricks DBFS",
     long_description=long_description,
     long_description_content_type='text/markdown',
