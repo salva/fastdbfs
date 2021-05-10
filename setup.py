@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 import os
 pkg_dir = os.path.abspath(os.path.dirname(__file__))
@@ -19,7 +19,7 @@ setup(
     author_email="sfandino@yahoo.com",
     license='GPLv3',
     license_files = ('LICENSE.txt',),
-    packages=['fastdbfs'],
+    packages=find_packages(),
     install_requires=[ "progressbar2", "aiohttp", "humanfriendly", "dateparser" ],
     entry_points={'console_scripts': ['fastdbfs=fastdbfs.runner:run']}
 );

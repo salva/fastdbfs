@@ -16,7 +16,8 @@ from fastdbfs.cmdline import option, flag, arg, remote, local, argless, chain
 from fastdbfs.format import Table, format_human_size, format_time
 import fastdbfs.util
 
-_find_predicates=chain(option("min-size", cast="size"),
+_find_predicates=chain(option("type", cast="filetype"),
+                       option("min-size", cast="size"),
                        option("max-size", cast="size"),
                        option("max-depth", cast="int"),
                        option("min-depth", cast="int"),
@@ -130,10 +131,11 @@ class CLI(cmd.Cmd):
 
         self._dbfs.mkdir(path)
 
-    def _do_ls(self, path, long, human):
+    def _do_ls(self, path, long, human, timestamps):
         if long:
             size_format = "human_size" if human else "size"
-            table = Table("right_text", size_format, "time", "text")
+            time_format = "timestamp" if timestamps else "time"
+            table = Table("right_text", size_format, time_format, "text")
         else:
             table = Table(None, None, None, "text")
         for fi in self._dbfs.ls(path):
@@ -142,8 +144,9 @@ class CLI(cmd.Cmd):
 
     @flag("long", "l")
     @flag("human", "h")
+    @flag("timestamps", "ts")
     @remote("path", default=".")
-    def do_ls(self, path, long, human):
+    def do_ls(self, path, long, human, timestamps):
         """
         ls [OPTS] [path]
 
@@ -151,21 +154,24 @@ class CLI(cmd.Cmd):
 
         The accepted options are as follows:
 
-          -l, --long   Print file properties.
+          -l, --long    Print file properties.
 
-          -h, --human  Print file sizes in a human friendly manner.
+          -h, --human   Print file sizes in a human friendly manner.
+
+          --timestamps  Print dates as raw timestamps.
         """
         return self._do_ls(path, long, human)
 
+    @flag("timestamps", "ts")
     @flag("human", "h")
     @remote("path", default=".")
-    def do_ll(self, path, human):
+    def do_ll(self, path, human, timestamps):
         """
         ll [OPTS] [path]
 
         ll is an alias for "ls -l".
         """
-        return self._do_ls(path, True, human)
+        return self._do_ls(path, True, human, timestamps)
 
     @local("path", default="~")
     def do_lcd(self, path):
@@ -388,18 +394,15 @@ class CLI(cmd.Cmd):
                             filter_cb = self._wrap_external_filter(external_filter),
                             predicates = predicates)
 
-    def _rput_update_cb(self, path, ok, ex):
-        if ok:
-            print(f"{path} ok!")
-        elif ex is None:
-            print(f"{path} FAILED!")
-        else:
-            print(f"{path} FAILED {ex}!")
-
+    @flag("verbose", "v")
+    @flag("nowarn", "quiet", "q")
     @flag("overwrite", "o")
+    @flag("sync", "synchronize")
+    @_find_predicates
     @local("src")
     @remote("target", arity="?")
-    def do_rput(self, overwrite, src, target):
+    def do_rput(self, verbose, nowarn, overwrite, sync,
+                src, target, external_filter, **predicates):
         """
         rput [src [target]]
 
@@ -417,7 +420,22 @@ class CLI(cmd.Cmd):
                 target = "."
             else:
                 target = os.path.basename(normalized_src)
-        self._dbfs.rput(src, target, overwrite=overwrite, update_cb=self._rput_update_cb)
+        with progressbar.ProgressBar(redirect_stderr=True) as bar:
+            def update_cb(entry, max_entries, done):
+                if not nowarn:
+                    relpath = entry.fi.relpath(os.getcwd(), src)
+                    if entry.ex:
+                        print(f"{relpath}: FAILED. {entry.ex}", file=sys.stderr)
+                    elif entry.good and verbose:
+                        print(f"{relpath}: copied.", file=sys.stderr)
+                bar.max_value = max_entries
+                bar.update(done)
+            self._dbfs.rput(src, target,
+                            overwrite=overwrite,
+                            sync=sync,
+                            update_cb=update_cb,
+                            filter_cb=self._wrap_external_filter(external_filter),
+                            predicates=predicates)
 
     @flag("verbose", "v")
     @flag("nowarn", "quiet", "q")

@@ -14,23 +14,12 @@ import logging
 import inspect
 import tempfile
 
-from fastdbfs.fileinfo import FileInfo
+from fastdbfs.fileinfo import FileInfoDBFS, FileInfoLocal
 from fastdbfs.swarm import Swarm
 from fastdbfs.exceptions import RateError, APIError
+from fastdbfs.dbfs.mirror import RGetter, RPutter
+from fastdbfs.walker import WalkerEntry
 import fastdbfs.util
-
-class FindEntry():
-    def __init__(self, fi, good=True, ex=None, done=False):
-        self.fi = fi
-        self.good = good
-        self.ex = ex
-        self.done = done
-
-    def __str__(self):
-        return f"FindEntry(path={self.fi.abspath()}, done={self.done}, ex={self.ex})"
-
-    def __repr__(self):
-        return self.__str__()
 
 class Disconnected():
     def __init__(self):
@@ -68,6 +57,9 @@ class DBFS():
 
     def _resolve(self, path, *more):
         return posixpath.normpath(posixpath.join(self.cwd, path, *more))
+
+    def _resolve_local(self, path, *more):
+        return os.path.abspath(os.path.join(path, *more))
 
     def prompt(self):
         if self.id == "DEFAULT":
@@ -185,7 +177,7 @@ class DBFS():
     async def _async_get_status(self, session, path):
         r = await self._async_http_get(session, "api/2.0/dbfs/get-status",
                                        path=self._resolve(path))
-        return FileInfo.from_json(r)
+        return FileInfoDBFS.from_json(r)
 
     def _run_with_session(self, task, *args, **kwargs):
         task_with_session = self._async_call_with_session(task, *args, **kwargs)
@@ -231,7 +223,7 @@ class DBFS():
         #print(f"> {path}")
         r = await self._async_http_get(session, "api/2.0/dbfs/list", path=path)
         #print(f"listing {path} done")
-        return [FileInfo.from_json(e) for e in r.get("files", [])]
+        return [FileInfoDBFS.from_json(e) for e in r.get("files", [])]
 
     def ls(self, path):
         path = self._resolve(path)
@@ -285,7 +277,13 @@ class DBFS():
         if not self.get_status(path).is_dir():
             raise Exception("Not a directory")
 
-    async def _async_put(self, session, src, target, overwrite=False, update_cb=None):
+    async def _async_put(self, session, src, target,
+                         overwrite=False, mkdirs=False,
+                         update_cb=None):
+
+        if mkdirs:
+            logging.warn("TODO: mkdirs support not implemented yet!!!")
+
         target = self._resolve(target)
         st = os.stat(src)
         size = st.st_size
@@ -509,11 +507,11 @@ class DBFS():
                     e.good = False
 
         root_fi = await self._async_get_status(session, path)
-        root_entry = FindEntry(root_fi)
+        root_entry = WalkerEntry(root_fi)
         await filter([root_entry])
 
         if not root_fi.is_dir():
-            await update_cb(entry=root_entry, entries_found=1, done=1)
+            await update_cb(entry=root_entry, max_entries=1, done=1)
             return
 
         swarm = self._make_swarm(use_priority_queue=True, queue_max_size=0)
@@ -540,7 +538,7 @@ class DBFS():
 
                 if fis:
                     entries_found += len(fis)
-                    new = [FindEntry(fi, done=not fi.is_dir())
+                    new = [WalkerEntry(fi, done=not fi.is_dir())
                            for fi in fis]
                     await filter(new)
                     pending += new
@@ -569,116 +567,8 @@ class DBFS():
                                self._asynchronize(filter_cb),
                                predicates=predicates)
 
-    def _needs_sync(self, local_path, fi):
-        """Checks wheter the file at local_path is older or has a different
-        size than the one in fi.
-        """
-        try:
-            st = os.stat(local_path)
-            logging.debug(f"comparing file {local_path} with stats {st} with fi {fi}")
-            if st.st_size != fi.size():
-                return True
-            if st.st_mtime_ns  < fi.mtime() * 1000000:
-                return True
-            return False
-        except:
-            return True
-
-    async def _async_rget(self, session, src, target, overwrite=False, sync=False,
-                          update_cb=None, filter_cb=None, predicates={}):
-        src = self._resolve(src)
-
-        if sync:
-            overwrite=True
-
-        # We use two worker queues here, low is for the low level
-        # requests. We pass it to the _self_get method without ever
-        # using it directly. high_queue is for parallelizing the
-        # _self_get calls.
-
-        low_swarm = self._make_swarm(name="rget-low")
-        high_swarm = self._make_swarm(name="rget-high")
-        response_queue = asyncio.Queue()
-
-        entries = 1 # those are the entries seen so far as reported by find
-        active_gets = {}
-
-        async def update(entry):
-            if update_cb:
-                await update_cb(entry=entry, max_entries=entries, done=entries-len(active_gets))
-
-        async def update_after_get(relpath, ex):
-            entry = active_gets.pop(relpath)
-            entry.ex = ex
-            logging.debug("Exception caught during file get")
-            await update(entry)
-
-        async def empty_response_queue():
-            try:
-                while True:
-                    (relpath, _, ex) = response_queue.get_nowait()
-                    await update_after_get(relpath, ex)
-            except asyncio.QueueEmpty:
-                return
-
-        async def find_cb(entry, max_entries, done):
-            nonlocal entries
-
-            # We empty the response_queue everytime this function is called.
-            await empty_response_queue()
-
-            fi = entry.fi
-            relpath = fi.relpath(src)
-            local_path = os.path.abspath(os.path.join(target, relpath))
-            entries = max_entries
-            if fi.is_dir():
-                if os.path.isdir(local_path):
-                    logging.debug(f"directory already exists for {relpath}")
-                    entry.good = False
-                if entry.good: # mkdir
-                    logging.debug(f"making dir for {relpath}")
-                    try:
-                        fastdbfs.util.mkdirs(local_path)
-                    except Exception as ex:
-                        if not os.path.isdir(local_path):
-                            logging.warn(f"{relpath}: mkdirs failed. {ex}")
-                            entry.ex = ex
-                else:
-                    logging.debug(f"discarding dir {relpath}")
-            else:
-                if sync and entry.good and not self._needs_sync(local_path, fi):
-                        logging.debug(f"file {relpath} doesn't need synchronization")
-                        entry.good = False
-                if entry.good:
-                    logging.debug(f"queueing download of {relpath}")
-                    await high_swarm.put(self._async_get,
-                                         task_key=relpath,
-                                         response_queue=response_queue,
-                                         low_swarm=low_swarm,
-                                         src=fi.abspath(), target=local_path,
-                                         overwrite=overwrite,
-                                         mkdirs=True)
-                    active_gets[relpath] = entry
-                    return # don't report the entry yet!
-                else:
-                    logging.debug(f"discarding file {relpath}")
-
-            await update(entry)
-
-        # This code is a bit hairy because we run the control code and
-        # both swarms concurrently:
-        async def control():
-            await high_swarm.run_while(self._async_find(session, src,
-                                                        update_cb=find_cb,
-                                                        filter_cb=filter_cb,
-                                                        predicates=predicates))
-
-            while active_gets:
-                logging.debug(f"_async_rget control, {len(active_gets)} gets currently active")
-                (relpath, _, ex) = await response_queue.get()
-                await update_after_get(relpath, ex)
-
-        await low_swarm.run_while(control())
+    def _async_rget(self, *args, **kwargs):
+        return RGetter(self).mirror(*args, **kwargs)
 
     def rget(self, src, target,
              overwrite=False, sync=False,
@@ -691,67 +581,17 @@ class DBFS():
                                update_cb=self._asynchronize(update_cb),
                                predicates=predicates)
 
-    async def _async_rput(self, session, src, target, overwrite=False, update_cb=None):
-        target = self._resolve(target)
-        local_root_fi = FileInfo.from_local(src)
+    def _async_rput(self, *args, **kwargs):
+        return RPutter(self).mirror(*args, **kwargs)
 
-        swarm = self._make_swarm()
-        response_queue = asyncio.Queue()
-
-        async def control():
-            active_puts = 0
-            for (dir, _, filenames) in os.walk(src):
-                local_fi = FileInfo.from_local(dir)
-                relpath = local_fi.relpath(local_root_fi.abspath())
-                remote_path = self._resolve(target, relpath)
-                local_path = os.path.join(src, relpath)
-
-                status = None
-                try:
-                    await self._async_mkdir(session, path=remote_path)
-                    if update_cb:
-                        await update_cb(local_path, True, None)
-
-                except Exception as ex:
-                    if update_cb:
-                        await update_cb(local_path, False, ex)
-                        for fn in filenames:
-                            await update_cb(os.path.join(local_path, fn), False, None)
-
-                else:
-                    for fn in filenames:
-                        local_child_path = os.path.join(local_path, fn)
-                        remote_child_path = self._resolve(remote_path, fn)
-                        #print(f"remote_child_path: {remote_child_path}")
-                        await swarm.put(self._async_put,
-                                        task_key=local_child_path,
-                                        src=local_child_path,
-                                        target=remote_child_path,
-                                        overwrite=overwrite,
-                                        response_queue=response_queue)
-                        active_puts += 1
-
-                while True:
-                    try:
-                        (local_child_path, res, ex) = response_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    active_puts -= 1
-                    if update_cb:
-                        ok = ex is None
-                        await update_cb(local_child_path, ok, ex)
-
-            while active_puts > 0:
-                (local_child_path, res, ex) = await response_queue.get()
-                active_puts -= 1
-                if update_cb:
-                    ok = ex is None
-                    await update_cb(local_child_path, ok, ex)
-
-        await swarm.run_while(control())
-
-    def rput(self, src, target, overwrite=False, update_cb=None):
-        self._run_with_session(self._async_rput, src, target,
+    def rput(self, src, target,
+             overwrite=False, sync=False,
+             update_cb=None, filter_cb=None, predicates={}):
+        self._run_with_session(self._async_rput,
+                               src, target,
                                overwrite=overwrite,
-                               update_cb=self._asynchronize(update_cb))
+                               sync=sync,
+                               filter_cb=self._asynchronize(filter_cb),
+                               update_cb=self._asynchronize(update_cb),
+                               predicates=predicates)
 

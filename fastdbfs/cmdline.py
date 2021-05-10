@@ -67,6 +67,13 @@ def _compile_regex(str, case_insensitive):
     logging.debug(f"compiling pattern {str}, case_insensitive: {case_insensitive}")
     return re.compile(str, 0 if case_insensitive else re.I)
 
+def _parse_filetype(arg):
+    if arg == "f" or arg == "file":
+        return "file"
+    if arg == "d" or arg == "dir":
+        return "dir"
+    raise Exception(f"Invalid file type specification {arg}")
+
 def _cast(arg, type, extra):
     # print(f"converting {arg} to {type}")
     if type == "int":
@@ -79,6 +86,8 @@ def _cast(arg, type, extra):
     if type == "re":
         ci = extra.get("case_insensitive", False)
         return _compile_regex(arg, ci)
+    if type == "filetype":
+        return _parse_filetype(arg)
     if type.startswith("date"):
         settings = {"PREFER_DATES_FROM": "past"}
         if type == "date>":

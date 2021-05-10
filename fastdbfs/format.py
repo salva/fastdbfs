@@ -18,6 +18,9 @@ def format_right_text(text, padding=0):
 def format_time(t, padding=0):
     return format_right_text(time_to_human(t), padding)
 
+def format_timestamp(t, padding=0):
+    return format_right_text(int(t), padding)
+
 def format_human_size(size, padding=0):
     return format_right_text(size_to_human(size), padding)
 
@@ -66,4 +69,6 @@ class Table:
             return format_right_text
         if format == "time":
             return format_time
+        if format == "timestamp":
+            return format_timestamp
         raise Exception(f"No formatter available for type {format}")

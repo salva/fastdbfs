@@ -7,22 +7,6 @@ import logging
 
 class FileInfo():
 
-    @staticmethod
-    def from_json(json):
-        return FileInfo(json["is_dir"],
-                        json["file_size"],
-                        json["modification_time"],
-                        json["path"])
-
-    @staticmethod
-    def from_local(filename, *more):
-        path = os.path.abspath(os.path.join(filename, *more))
-        st = os.stat(path)
-        return FileInfo(stat.S_ISDIR(st.st_mode),
-                        st.st_size,
-                        st.st_mtime,
-                        path)
-
     def __init__(self, is_dir, size, mtime, abspath):
         self._is_dir = is_dir
         self._size = size
@@ -39,16 +23,16 @@ class FileInfo():
                  "is_dir":  self._is_dir }
 
     def basename(self):
-        return posixpath.basename(self._abspath)
+        return self.path_module.basename(self._abspath)
 
     def abspath(self):
         return self._abspath
 
     def relpath(self, base, requested=None):
-        if requested is not None and requested[0] == "/":
+        if requested is not None and self.path_module.isabs(requested):
             # the original request was absolute
             return self._abspath
-        base = posixpath.normpath(base)
+        base = self.path_module.normpath(base)
         path = self.abspath()
         if path == base:
             return "."
@@ -70,6 +54,9 @@ class FileInfo():
 
     def type(self):
         return "dir" if self._is_dir else "file"
+
+    def _check_predicate__type(self, type, _):
+        return type == self.type()
 
     def _check_predicate__newer_than(self, limit, _):
         return self.mtime() >= limit*1000
@@ -121,3 +108,26 @@ class FileInfo():
                         logging.debug(f"entry {self.abspath()} has been discarded by predicate {key} with value {value}")
                         return False
         return True
+
+class FileInfoDBFS(FileInfo):
+    path_module = posixpath
+
+    @staticmethod
+    def from_json(json):
+        return FileInfoDBFS(json["is_dir"],
+                            json["file_size"],
+                            json["modification_time"],
+                            json["path"])
+
+class FileInfoLocal(FileInfo):
+    path_module = os.path
+
+    @staticmethod
+    def from_path(filename, *more):
+        path = os.path.abspath(os.path.join(filename, *more))
+        st = os.stat(path)
+        return FileInfoLocal(stat.S_ISDIR(st.st_mode),
+                             st.st_size,
+                             st.st_mtime_ns / 1000000,
+                             path)
+
