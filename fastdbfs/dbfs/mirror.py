@@ -17,6 +17,9 @@ class Mirror:
                        overwrite=False, mkdirs=False, update_db=None):
         raise NotImplementedError()
 
+    def needs_low_swarm(self):
+        return False
+
     async def mirror(self, session, src, target,
                      overwrite=False, sync=False,
                      update_cb=None, filter_cb=None, predicates={}):
@@ -32,7 +35,8 @@ class Mirror:
         # using it directly. high_queue is for running multiple
         # transfer calls concurrently.
 
-        low_swarm = self._dbfs._make_swarm(name="mirror-low")
+        low_workers = None if self.needs_low_swarm() else 1 # None allocates the default
+        low_swarm = self._dbfs._make_swarm(name="mirror-low", workers=low_workers)
         high_swarm = self._dbfs._make_swarm(name="mirror-high")
         response_queue = asyncio.Queue()
 
@@ -116,6 +120,9 @@ class Mirror:
         await low_swarm.run_while(control())
 
 class RGetter(Mirror):
+    def needs_low_swarm(self):
+        return True
+
     def resolve_src(self, path, *more):
         return self._dbfs._resolve(path, *more)
 

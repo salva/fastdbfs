@@ -79,12 +79,14 @@ class DBFS():
             return cb(*args, **kwargs)
         return async_cb
 
-    def _make_swarm(self, name=None, queue_max_size=None, **kwargs):
+    def _make_swarm(self, name=None, workers=None, queue_max_size=None, **kwargs):
         if name is None:
             name = inspect.stack()[1].function
+        if workers is None:
+            workers = self.workers
         if queue_max_size is None:
-            queue_max_size=self.workers
-        return Swarm(self.workers, queue_max_size=queue_max_size, name=name, **kwargs)
+            queue_max_size = workers
+        return Swarm(workers, queue_max_size=queue_max_size, name=name, **kwargs)
 
     async def _unpack_http_response(self, response):
         status = response.status
