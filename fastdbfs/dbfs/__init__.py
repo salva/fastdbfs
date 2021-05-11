@@ -280,11 +280,8 @@ class DBFS():
             raise Exception("Not a directory")
 
     async def _async_put(self, session, src, target,
-                         overwrite=False, mkdirs=False,
+                         overwrite=False, mkdirs=True,
                          update_cb=None):
-
-        if mkdirs:
-            logging.warn("TODO: mkdirs support not implemented yet!!!")
 
         target = self._resolve(target)
         st = os.stat(src)

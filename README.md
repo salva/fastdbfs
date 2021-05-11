@@ -128,6 +128,8 @@ Supported options are as follows:
   options for selectively picking the files that should be
   displayed:
 
+* `--type`: Picks entries according to their type (`file` or `dir`).
+
 * `--min-size=SIZE`, `--max-size=SIZE`: Picks files according to their
     size (this rule is ignored for directories).
 
@@ -216,9 +218,23 @@ Examples:
 Copies the given local directory to the remote system
 recursively.
 
-Supported options are:
+Supported options are as follows:
 
-* `-o`, `--overwrite`: Overwrites any previously existent remote file.
+* `-v`, `--verbose`: Display the names of the files being copied.
+
+* `--nowarn`: Do not show warnings.
+
+* `-o`, `--overwrite`: Overwrite existing files.
+
+* `--sync`: Copy only files that have changed.
+
+In addition to those, `rput` accepts the same set of
+predicates as `find` for selecting the entries to copy.
+
+When `sync` mode is enabled, before transferring a file it is checked
+whether a file already exists at the destination, if it is as new as
+the local one and if the sizes are the same. The download is skipped
+whan all these conditions are true.
 
 ### `rm [OPTS] path`
 
