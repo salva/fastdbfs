@@ -118,7 +118,7 @@ class DBFS():
             error_code = data["error_code"]
             message = data["message"]
         except:
-            raise Exception("Unexpected response received from API, HTTP status {status}")
+            raise Exception(f"Unexpected response received from API, HTTP status {status}")
 
         raise APIError(error_code, message)
 
