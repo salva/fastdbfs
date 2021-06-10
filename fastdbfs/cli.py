@@ -101,7 +101,7 @@ class CLI(cmd.Cmd):
 
         self._do_open(profile)
 
-    @remote("path")
+    @remote("path", default="/")
     def do_cd(self, path):
         """
         cd [path]
