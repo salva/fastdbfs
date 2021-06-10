@@ -91,7 +91,7 @@ class DBFS():
     async def _unpack_http_response(self, response):
         status = response.status
 
-        if response.headers.get("x-envoy-ratelimited", None) == "true":
+        if status == 429 or response.headers.get("x-envoy-ratelimited", None) == "true":
             # print(f"Too many requests!")
             raise RateError("Too many requests")
 
