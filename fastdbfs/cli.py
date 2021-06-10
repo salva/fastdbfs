@@ -378,9 +378,9 @@ class CLI(cmd.Cmd):
             def update_cb(entry, max_entries, done):
                 bar.max_value = max_entries
                 bar.update(done)
+                fi = entry.fi
+                relpath = fi.relpath(self._dbfs.cwd, path)
                 if entry.good:
-                    fi = entry.fi
-                    relpath = fi.relpath(self._dbfs.cwd, path)
                     if long:
                         size = fi.size()
                         if human:
