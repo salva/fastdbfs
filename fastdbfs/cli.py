@@ -160,7 +160,7 @@ class CLI(cmd.Cmd):
 
           --timestamps  Print dates as raw timestamps.
         """
-        return self._do_ls(path, long, human)
+        return self._do_ls(path, long, human, timestamps)
 
     @flag("timestamps", "ts")
     @flag("human", "h")
@@ -390,7 +390,7 @@ class CLI(cmd.Cmd):
                     else:
                         print(relpath)
                 if entry.ex and not quiet:
-                    print("# Unable to recurse into {relpath}, {entry.ex}", file=sys.stderr)
+                    print(f"# Unable to recurse into {relpath}, {entry.ex}", file=sys.stderr)
 
             self._dbfs.find(path, update_cb,
                             filter_cb = self._wrap_external_filter(external_filter),
